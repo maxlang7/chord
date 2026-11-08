@@ -1,8 +1,8 @@
 import WebSocket from 'ws';
 const flows=new Map();
 function bridge(config,id){const b=config.bridges?.find(b=>b.id===id);if(!b)throw Object.assign(new Error('This bridge has not been configured'),{status:503});return b}
-async function call(config,id,endpoint,method='GET',body){const b=bridge(config,id),url=new URL('/_matrix/provision'+endpoint,b.url);url.searchParams.set('user_id',config.matrixAccount.userId);const r=await fetch(url,{method,headers:{Authorization:'Bearer '+b.secret,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(90000)});const d=await r.json();if(!r.ok)throw Object.assign(new Error(d.error||d.message||'Bridge request failed'),{status:r.status});return d}
-export async function bridgeInfo(config,id){const b=bridge(config,id);return call(config,id,b.version===1?'/v1/ping':'/v3/whoami')}
+async function call(config,id,endpoint,method='GET',body,timeout=90000){const b=bridge(config,id),url=new URL('/_matrix/provision'+endpoint,b.url);url.searchParams.set('user_id',config.matrixAccount.userId);const r=await fetch(url,{method,headers:{Authorization:'Bearer '+b.secret,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(timeout)});const d=await r.json();if(!r.ok)throw Object.assign(new Error(d.error||d.message||'Bridge request failed'),{status:r.status});return d}
+export async function bridgeInfo(config,id){const b=bridge(config,id);return call(config,id,b.version===1?'/v1/ping':'/v3/whoami','GET',undefined,8000)}
 export function loginState(id){return flows.get(id)?.state||{type:'idle',instructions:'Choose Connect to sign in.'}}
 async function accept(config,id,state){const old=flows.get(id)||{};flows.set(id,{...old,state});if(state.type==='display_and_wait'){
  const txn=state.txn_id?'?txn_id='+encodeURIComponent(state.txn_id):'';

@@ -31,6 +31,7 @@ pub enum Event {
     Media(String, Box<Result<Decoded, String>>),
     File(std::path::PathBuf),
     Notice(String),
+    Search(u64, Result<serde_json::Value, String>),
 }
 pub struct Media {
     pub cache: HashMap<String, Entry>,
@@ -146,6 +147,32 @@ impl Media {
             }
             _ => None,
         }
+    }
+    pub fn download_file(&self, target: Target, api: Option<Api>, ctx: &egui::Context) {
+        let Some(api) = api else {
+            return;
+        };
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+        tokio::spawn(async move {
+            use base64::Engine;
+            let result = async {
+                let value = api.post(&Api::conversation(&target.chat, "attachment"), serde_json::json!({"messageID":target.message,"index":target.index,"attachmentID":target.attachment["id"]})).await?;
+                let encoded = value["data"].as_str().ok_or_else(|| anyhow::anyhow!("Attachment has no file data"))?;
+                if encoded.len() > images::MAX_BYTES * 4 / 3 + 8 { anyhow::bail!("Attachment exceeds 20 MB"); }
+                let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded).or_else(|_| base64::engine::general_purpose::STANDARD.decode(encoded))?;
+                if bytes.len() > images::MAX_BYTES { anyhow::bail!("Attachment exceeds 20 MB"); }
+                let name = value["fileName"].as_str().unwrap_or_else(|| target.name());
+                let extension = std::path::Path::new(name).extension().and_then(|s| s.to_str()).unwrap_or("bin");
+                images::save_bytes(&bytes, name, extension)
+            }.await;
+            let notice = match result {
+                Ok(file) => format!("Saved {}", file.display()),
+                Err(e) => format!("Download failed: {e:#}"),
+            };
+            let _ = tx.send(Event::Notice(notice));
+            ctx.request_repaint();
+        });
     }
     pub fn save(&self, target: &Target, brave: bool) -> Result<std::path::PathBuf, String> {
         let Some(Entry::Ready { data, .. }) = self.cache.get(&target.key()) else {

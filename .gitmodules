@@ -1,3 +1,6 @@
 [submodule "vendor/pickle"]
 	path = vendor/pickle
 	url = https://github.com/beeper/pickle.git
+[submodule "vendor/ai-bridge"]
+	path = vendor/ai-bridge
+	url = https://github.com/beeper/ai-bridge.git

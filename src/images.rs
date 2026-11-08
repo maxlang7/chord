@@ -118,7 +118,20 @@ pub fn decode(data: &str) -> Result<Decoded> {
     })
 }
 pub fn save(data: &Decoded, name: &str) -> Result<PathBuf> {
+    save_bytes(&data.bytes, name, data.extension)
+}
+pub fn save_bytes(bytes: &[u8], name: &str, extension: &str) -> Result<PathBuf> {
     use std::io::Write;
+    let safe_extension: String = extension
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(12)
+        .collect();
+    let extension = if safe_extension.is_empty() {
+        "bin"
+    } else {
+        &safe_extension
+    };
     let root = PathBuf::from(std::env::var_os("CHORD_DOWNLOAD_DIR").unwrap_or_else(|| {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("private/downloads")
@@ -140,7 +153,7 @@ pub fn save(data: &Decoded, name: &str) -> Result<PathBuf> {
         } else {
             format!("-{i}")
         };
-        let file = root.join(format!("{stem}{suffix}.{}", data.extension));
+        let file = root.join(format!("{stem}{suffix}.{extension}"));
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -150,7 +163,7 @@ pub fn save(data: &Decoded, name: &str) -> Result<PathBuf> {
         }
         match options.open(&file) {
             Ok(mut f) => {
-                f.write_all(&data.bytes)?;
+                f.write_all(bytes)?;
                 return Ok(file);
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,

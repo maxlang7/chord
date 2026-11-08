@@ -25,6 +25,11 @@ pub struct Gui {
     profile_id: String,
     settings_path: PathBuf,
     scroll_to: Option<String>,
+    search_focus: bool,
+    message_search: bool,
+    search_busy: bool,
+    search_seq: u64,
+    search_results: Value,
 }
 impl Gui {
     pub fn new(mut app: App, ctx: &egui::Context) -> Self {
@@ -52,6 +57,11 @@ impl Gui {
             profile_id: String::new(),
             settings_path,
             scroll_to: None,
+            search_focus: false,
+            message_search: false,
+            search_busy: false,
+            search_seq: 0,
+            search_results: Value::Null,
         }
     }
     fn key(&mut self, code: crossterm::event::KeyCode) {
@@ -128,14 +138,29 @@ impl Gui {
                     (5, "Personal email", "@"),
                     (6, "CMU email", "CMU"),
                 ] {
+                    let connection_id = crate::model::SOURCES[index].0;
+                    let connected = self.app.connections["items"]
+                        .as_array()
+                        .and_then(|v| v.iter().find(|c| c["id"] == connection_id))
+                        .and_then(|c| c["connected"].as_bool());
+                    let title = if compact {
+                        short.to_owned()
+                    } else {
+                        format!(
+                            "{} {label}",
+                            match connected {
+                                Some(true) => "●",
+                                Some(false) => "○",
+                                None => " ",
+                            }
+                        )
+                    };
                     let selected = self.app.source == index;
-                    let button = egui::Button::new(
-                        RichText::new(if compact { short } else { label }).color(if selected {
-                            p.accent
-                        } else {
-                            p.text
-                        }),
-                    )
+                    let button = egui::Button::new(RichText::new(title).color(if selected {
+                        p.accent
+                    } else {
+                        p.text
+                    }))
                     .fill(if selected {
                         p.raised
                     } else {
@@ -180,11 +205,27 @@ impl Gui {
                     self.app.load_accounts();
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    ui.label(
-                        RichText::new("●  Local connections")
-                            .size(11.)
-                            .color(p.accent),
-                    );
+                    let accounts = self.app.connections["items"].as_array();
+                    let online = accounts
+                        .map(|v| v.iter().filter(|a| a["connected"] == true).count())
+                        .unwrap_or(0);
+                    let total = accounts.map(Vec::len).unwrap_or(0);
+                    let label = if self.app.demo {
+                        "Preview".into()
+                    } else if total == 0 {
+                        "Checking accounts".into()
+                    } else {
+                        format!("{online}/{total} connected")
+                    };
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new(label).size(11.).color(p.accent))
+                                .frame(false),
+                        )
+                        .clicked()
+                    {
+                        self.app.load_accounts();
+                    }
                     let old = self.theme;
                     egui::ComboBox::from_id_salt("theme")
                         .selected_text(if compact { "Theme" } else { self.theme.name() })
@@ -199,6 +240,27 @@ impl Gui {
                     }
                 });
             });
+    }
+    fn run_search(&mut self, ctx: &egui::Context) {
+        self.search_seq += 1;
+        let seq = self.search_seq;
+        if self.search.trim().is_empty() {
+            self.search_results = Value::Null;
+            self.search_busy = false;
+            return;
+        }
+        let Some(api) = self.app.api.clone() else {
+            return;
+        };
+        self.search_busy = true;
+        let route = format!("/api/search?query={}", urlencoding::encode(&self.search));
+        let tx = self.media.tx.clone();
+        let ctx = ctx.clone();
+        tokio::spawn(async move {
+            let result = api.get(&route).await.map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Event::Search(seq, result));
+            ctx.request_repaint();
+        });
     }
     fn inbox(&mut self, ctx: &egui::Context, p: Palette) {
         egui::SidePanel::left("conversations")
@@ -223,19 +285,50 @@ impl Gui {
                     });
                 });
                 ui.add_space(10.);
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(!self.message_search, "Conversations").clicked() { self.message_search = false; }
+                    if ui.selectable_label(self.message_search, "Message text").clicked() { self.message_search = true; self.run_search(ctx); }
+                });
                 let search = ui.add(
                     egui::TextEdit::singleline(&mut self.search)
-                        .hint_text("Search conversations…")
+                        .hint_text(if self.message_search { "Search messages and email…" } else { "Search conversations…" })
                         .desired_width(f32::INFINITY),
                 );
-                if search.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if self.search_focus {
+                    search.request_focus();
+                    self.search_focus = false;
+                }
+                if self.search.is_empty() && !self.app.search.is_empty() {
+                    self.app.search.clear();
+                    self.app.selection = 0;
+                    self.app.refresh(false);
+                }
+                if search.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.message_search {
                     self.app.search = self.search.clone();
                     self.app.selection = 0;
                     self.app.refresh(false);
                 }
-                if !self.search.is_empty() && ui.small_button("Search").clicked() {
-                    self.app.search = self.search.clone();
-                    self.app.refresh(false);
+                if !self.search.is_empty() && (ui.small_button("Search").clicked() || (self.message_search && search.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))) {
+                    if self.message_search { self.run_search(ctx); } else { self.app.search = self.search.clone(); self.app.refresh(false); }
+                }
+                if self.message_search {
+                    if self.search_busy { ui.spinner(); }
+                    ui.add(egui::Label::new(RichText::new("Synced chat history, cached iPhone messages, and Gmail. Ctrl+K to search.").small().color(p.muted)).wrap());
+                    let hits = self.search_results["items"].as_array().cloned().unwrap_or_default();
+                    egui::ScrollArea::vertical().id_salt("search-results").show(ui, |ui| {
+                        if hits.is_empty() && !self.search_busy { ui.label("No results. Enter text and press Search."); }
+                        for hit in hits {
+                            let Ok(chat) = serde_json::from_value::<Conversation>(hit["conversation"].clone()) else { continue; };
+                            let text = hit["message"]["text"].as_str().unwrap_or("");
+                            let label = format!("{} · {}\n{}", chat.title, source_label(&chat.source), one_line(text).chars().take(130).collect::<String>());
+                            if ui.add_sized([ui.available_width(), 72.], egui::Button::new(label).wrap()).clicked() {
+                                self.choose_chat(chat);
+                                self.scroll_to = hit["message"]["id"].as_str().filter(|s| !s.is_empty()).map(str::to_owned);
+                            }
+                        }
+                    });
+                    for error in self.search_results["errors"].as_array().into_iter().flatten() { ui.label(RichText::new(format!("{}: {}", error["source"].as_str().unwrap_or("Account"), error["error"].as_str().unwrap_or("Unavailable"))).small().color(p.muted)); }
+                    return;
                 }
                 ui.add_space(6.);
                 ui.horizontal(|ui| {
@@ -412,8 +505,11 @@ impl Gui {
                     ui.vertical_centered(|ui| {
                         ui.add_space(ui.available_height() * 0.32);
                         ui.label(RichText::new("c·").size(58.).color(p.accent));
-                        ui.heading("A little less switching.");
-                        ui.label(RichText::new("Your chats and email, together.").color(p.muted));
+                        ui.heading("Your conversations");
+                        ui.label(
+                            RichText::new("Slack, Discord, WhatsApp, iPhone, and email")
+                                .color(p.muted),
+                        );
                         ui.add_space(15.);
                         ui.label("Choose a conversation to get started.");
                     });
@@ -724,13 +820,23 @@ impl Gui {
                                         .unwrap_or(0);
                                 }
                             } else {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "↓ {}",
-                                        a["fileName"].as_str().unwrap_or("Attachment")
-                                    ))
-                                    .color(p.blue),
-                                );
+                                if ui
+                                    .button(
+                                        RichText::new(format!(
+                                            "↓ Save {}",
+                                            a["fileName"].as_str().unwrap_or("Attachment")
+                                        ))
+                                        .color(p.blue),
+                                    )
+                                    .clicked()
+                                {
+                                    self.app.notice = "Downloading attachment…".into();
+                                    self.media.download_file(
+                                        target,
+                                        self.app.api.clone(),
+                                        ui.ctx(),
+                                    );
+                                }
                             }
                         }
                         let mut reactions = BTreeMap::<String, (usize, bool)>::new();
@@ -1282,7 +1388,10 @@ impl Gui {
                             .color(p.muted),
                     );
                     ui.add_space(12.);
-                    let items = self.app.accounts["items"]
+                    if ui.button("Refresh connection status").clicked() {
+                        self.app.load_connections();
+                    }
+                    let items = self.app.connections["items"]
                         .as_array()
                         .cloned()
                         .unwrap_or_default();
@@ -1290,30 +1399,57 @@ impl Gui {
                         ui.spinner();
                         ui.label("Checking connections…");
                     }
-                    for (index, account) in items.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            let id = account["id"].as_str().unwrap_or("Account");
-                            ui.label(
-                                RichText::new(account["name"].as_str().unwrap_or(id)).strong(),
-                            );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui.button("Manage").clicked() {
-                                        self.app.account_selection = index;
-                                        self.key(crossterm::event::KeyCode::Enter);
-                                    }
-                                },
-                            );
+                    egui::ScrollArea::vertical()
+                        .max_height(490.)
+                        .show(ui, |ui| {
+                            for account in items {
+                                let id = account["id"].as_str().unwrap_or("");
+                                let connected = account["connected"] == true;
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(
+                                        if connected { p.accent } else { p.muted },
+                                        if connected { "●" } else { "○" },
+                                    );
+                                    ui.label(
+                                        RichText::new(account["name"].as_str().unwrap_or(id))
+                                            .strong(),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if account["canConnect"] == true
+                                                && ui
+                                                    .button(if connected {
+                                                        "Reconnect"
+                                                    } else {
+                                                        "Connect"
+                                                    })
+                                                    .clicked()
+                                            {
+                                                self.app.start_login(id.to_owned(), None);
+                                            }
+                                        },
+                                    );
+                                });
+                                if let Some(email) = account["email"].as_str() {
+                                    ui.label(email);
+                                }
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(account["detail"].as_str().unwrap_or(""))
+                                            .small()
+                                            .color(p.muted),
+                                    )
+                                    .wrap(),
+                                );
+                                ui.add_space(8.);
+                                ui.separator();
+                            }
                         });
-                        ui.separator();
-                    }
-                    ui.add_space(8.);
-                    for account in self.app.status["mail"].as_array().into_iter().flatten() {
-                        ui.label(format!(
-                            "✉ {}",
-                            account["email"].as_str().unwrap_or("Email")
-                        ));
+                    for error in &self.app.errors {
+                        ui.add(
+                            egui::Label::new(RichText::new(error).small().color(p.muted)).wrap(),
+                        );
                     }
                 } else {
                     if ui.small_button("← Accounts").clicked() {
@@ -1332,30 +1468,30 @@ impl Gui {
                         .as_str()
                         .or_else(|| self.app.login["qr"].as_str())
                         .map(str::to_owned);
-                    if let Some(code) = code {
-                        if let Ok(qr) = qrcode::QrCode::new(&code) {
-                            let modules = qr.width();
-                            let scale = (260. / (modules + 8) as f32).floor().max(2.);
-                            let side = (modules + 8) as f32 * scale;
-                            let (rect, _) =
-                                ui.allocate_exact_size(Vec2::splat(side), egui::Sense::hover());
-                            ui.painter().rect_filled(rect, 4, Color32::WHITE);
-                            for y in 0..modules {
-                                for x in 0..modules {
-                                    if qr[(x, y)] == qrcode::Color::Dark {
-                                        ui.painter().rect_filled(
-                                            egui::Rect::from_min_size(
-                                                rect.min
-                                                    + egui::vec2(
-                                                        (x + 4) as f32 * scale,
-                                                        (y + 4) as f32 * scale,
-                                                    ),
-                                                Vec2::splat(scale),
-                                            ),
-                                            0,
-                                            Color32::BLACK,
-                                        );
-                                    }
+                    if let Some(code) = code
+                        && let Ok(qr) = qrcode::QrCode::new(&code)
+                    {
+                        let modules = qr.width();
+                        let scale = (260. / (modules + 8) as f32).floor().max(2.);
+                        let side = (modules + 8) as f32 * scale;
+                        let (rect, _) =
+                            ui.allocate_exact_size(Vec2::splat(side), egui::Sense::hover());
+                        ui.painter().rect_filled(rect, 4, Color32::WHITE);
+                        for y in 0..modules {
+                            for x in 0..modules {
+                                if qr[(x, y)] == qrcode::Color::Dark {
+                                    ui.painter().rect_filled(
+                                        egui::Rect::from_min_size(
+                                            rect.min
+                                                + egui::vec2(
+                                                    (x + 4) as f32 * scale,
+                                                    (y + 4) as f32 * scale,
+                                                ),
+                                            Vec2::splat(scale),
+                                        ),
+                                        0,
+                                        Color32::BLACK,
+                                    );
                                 }
                             }
                         }
@@ -1498,8 +1634,26 @@ impl Gui {
 impl eframe::App for Gui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.app.poll();
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::K)) {
+            self.search_focus = true;
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::R)) {
+            self.app.refresh(false);
+            self.app.load_messages(false);
+            self.app.load_connections();
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
+            self.app.load_accounts();
+        }
         for event in self.media.poll(ctx) {
             match event {
+                Event::Search(seq, result) if seq == self.search_seq => {
+                    self.search_busy = false;
+                    match result {
+                        Ok(v) => self.search_results = v,
+                        Err(e) => self.app.notice = e,
+                    }
+                }
                 Event::File(file) => {
                     self.file_busy = false;
                     self.app.notice = "Uploading attachment…".into();

@@ -46,3 +46,5 @@ export async function sendMail(id,{to,subject,text,threadId,replyToMessageId,ref
  const raw=Buffer.from(headers.join('\r\n')+'\r\n\r\n'+Buffer.from(text).toString('base64').replace(/.{1,76}/g,'$&\r\n')).toString('base64url');
  return request(id,'/messages/send','POST',{raw,...(threadId?{threadId}:{})});
 }
+
+export async function checkMail(id){const p=await request(id,'/profile');if(p.emailAddress?.toLowerCase()!==account(id).email.toLowerCase())throw new Error('Google account mismatch');verified.add(id);return true}

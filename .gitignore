@@ -6,7 +6,6 @@
 /test-results/
 /.venv/
 /target/
-/vendor/ai-bridge/
 __pycache__/
 *.pyc
 /result

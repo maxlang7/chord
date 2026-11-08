@@ -110,6 +110,8 @@ pub enum Response {
     Inbox(u64, Result<Value, String>, bool),
     Messages(String, Result<Value, String>, bool, bool),
     Operation(String, Result<Value, String>),
+    Sent(String, Result<Value, String>),
+    Uploaded(String, Result<Value, String>),
     Accounts(Result<Value, String>),
     Login(String, Result<Value, String>),
 }
@@ -163,6 +165,8 @@ pub struct App {
     pub confirm_body: Option<Value>,
     pub confirm_action: String,
     pub status: Value,
+    pub connections: Value,
+    pub last_connection_refresh: Instant,
     pub focus_view: bool,
     pub discord_scope: Option<String>,
     pub server_focus: bool,
@@ -231,6 +235,8 @@ impl App {
             confirm_body: None,
             confirm_action: "send".into(),
             status: Value::Null,
+            connections: Value::Null,
+            last_connection_refresh: Instant::now(),
             focus_view: true,
             discord_scope: None,
             server_focus: false,
@@ -256,9 +262,22 @@ impl App {
             app.message_selection = 2
         } else {
             app.refresh(false);
-            app.load_status()
+            app.load_status();
+            app.load_connections()
         }
         app
+    }
+    pub fn load_connections(&mut self) {
+        self.last_connection_refresh = Instant::now();
+        if let Some(api) = self.api.clone() {
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                let _ = tx.send(Response::Operation(
+                    "connections".into(),
+                    result(api.get("/api/connections").await),
+                ));
+            });
+        }
     }
     fn load_status(&self) {
         if let Some(api) = self.api.clone() {
@@ -515,7 +534,6 @@ impl App {
     }
     pub fn open(&mut self, c: Conversation) {
         if let Some(old) = &self.active
-            && old.kind != "email"
             && !self.editor.text.is_empty()
         {
             self.drafts.insert(old.id.clone(), self.editor.text.clone());
@@ -593,6 +611,10 @@ impl App {
             return;
         }
         let Some(c) = self.active.clone() else { return };
+        if self.reply.is_some() && self.pending_attachment.is_some() && c.kind == "chat" {
+            self.notice = "Send the text reply and attachment separately. This bridge cannot attach a native reply to media yet.".into();
+            return;
+        }
         let mut body = json!({"text":self.editor.text});
         if c.kind == "email" {
             let Some(m) = self.reply.clone().or_else(|| self.messages.last().cloned()) else {
@@ -644,11 +666,19 @@ impl App {
             b["messageID"] = json!(id)
         }
         self.send_busy = !self.demo;
-        self.operation("send", Api::conversation(&c.id, &self.confirm_action), b);
+        if let Some(api) = self.api.clone() {
+            let route = Api::conversation(&c.id, &self.confirm_action);
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                let r = api.post(&route, b).await;
+                let _ = tx.send(Response::Sent(c.id, result(r)));
+            });
+        }
         self.notice = "Submitting your message…".into();
         self.mode = Mode::Compose;
     }
     pub fn load_accounts(&mut self) {
+        self.load_connections();
         self.mode = Mode::Accounts;
         if let Some(api) = self.api.clone() {
             let tx = self.tx.clone();
@@ -809,6 +839,42 @@ impl App {
                 self.send_busy = false;
             }
             match event {
+                Response::Sent(id, r) => {
+                    self.send_busy = false;
+                    match r {
+                        Ok(_) => {
+                            self.drafts.remove(&id);
+                            if self.active.as_ref().is_some_and(|c| c.id == id) {
+                                self.editor = Editor::default();
+                                self.reply = None;
+                                self.edit_message = None;
+                                self.pending_attachment = None;
+                                self.mode = Mode::Browse;
+                                self.load_messages(false);
+                            }
+                            self.notice =
+                                "Submitted. Checking the conversation for confirmation.".into();
+                            self.refresh(false);
+                        }
+                        Err(e) => self.notice = format!("Send failed. Your text is retained. {e}"),
+                    }
+                }
+                Response::Uploaded(id, r) => {
+                    if self.active.as_ref().is_none_or(|c| c.id != id) {
+                        self.notice = "Attachment upload finished for the previous conversation. Reattach it there to send.".into();
+                        continue;
+                    }
+                    match r {
+                        Ok(v) => {
+                            self.pending_attachment = Some(
+                                json!({"uploadID":v["uploadID"],"fileName":v["fileName"],"mimeType":v["mimeType"]}),
+                            );
+                            self.notice = "Attachment ready".into();
+                            self.mode = Mode::Compose;
+                        }
+                        Err(e) => self.notice = e,
+                    }
+                }
                 Response::Image(key, data) => self.images.insert(key, data),
                 Response::Inbox(seq, r, append) => {
                     if seq != self.request_seq {
@@ -907,6 +973,7 @@ impl App {
                 Response::Operation(label, r) => match r {
                     Ok(v) => match label.as_str() {
                         "status" => self.status = v,
+                        "connections" => self.connections = v,
                         "discord_servers" => {
                             self.servers = v["items"].as_array().cloned().unwrap_or_default();
                         }
@@ -939,27 +1006,6 @@ impl App {
                             self.notice = "Last contact link undone".into();
                         }
 
-                        "send" => {
-                            self.editor = Editor::default();
-                            self.reply = None;
-                            self.edit_message = None;
-                            self.pending_attachment = None;
-                            if let Some(c) = &self.active {
-                                self.drafts.remove(&c.id);
-                            }
-                            self.mode = Mode::Browse;
-                            self.notice =
-                                "Submitted. Checking the conversation for confirmation.".into();
-                            self.load_messages(false);
-                            self.refresh(false)
-                        }
-                        "upload" => {
-                            self.pending_attachment = Some(
-                                json!({"uploadID":v["uploadID"],"fileName":v["fileName"],"mimeType":v["mimeType"]}),
-                            );
-                            self.notice = "Attachment ready".into();
-                            self.mode = Mode::Compose
-                        }
                         _ => {
                             self.notice = label;
                             self.refresh(false);
@@ -992,18 +1038,26 @@ impl App {
                 }
             }
         }
+        if !self.demo && self.last_connection_refresh.elapsed().as_secs() >= 60 {
+            self.load_connections();
+        }
         if !self.demo
             && self.last_refresh.elapsed().as_secs() >= 30
             && !self.loading
-            && self.mode == Mode::Browse
+            && (self.mode == Mode::Browse || self.native_ui)
         {
             self.refresh(false)
         }
         if !self.demo
             && (self.native_ui || self.mode == Mode::Browse)
             && !self.message_loading
-            && self.active.as_ref().is_some_and(|c| c.kind == "chat")
-            && self.last_message_refresh.elapsed().as_secs() >= 5
+            && self.active.is_some()
+            && self.last_message_refresh.elapsed().as_secs()
+                >= if self.active.as_ref().is_some_and(|c| c.kind == "email") {
+                    30
+                } else {
+                    5
+                }
         {
             self.request_messages(false, true);
         }
@@ -1412,6 +1466,9 @@ impl App {
     }
     pub fn upload(&mut self, path: std::path::PathBuf) {
         self.mode = Mode::Compose;
+        let Some(chat) = self.active.as_ref().map(|c| c.id.clone()) else {
+            return;
+        };
         if let Some(api) = self.api.clone() {
             let tx = self.tx.clone();
             tokio::spawn(async move {
@@ -1432,7 +1489,7 @@ impl App {
                     .await
                 }
                 .await;
-                let _ = tx.send(Response::Operation("upload".into(), result(r)));
+                let _ = tx.send(Response::Uploaded(chat, result(r)));
             });
         }
     }
@@ -1463,6 +1520,40 @@ fn base64_encode(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn late_send_and_upload_results_cannot_change_another_conversations_composer() {
+        let mut a = App::new(None, true);
+        a.active = Some(Conversation {
+            id: "second".into(),
+            ..Default::default()
+        });
+        a.editor.set("Keep this unsent text".into());
+        a.send_busy = true;
+        a.tx.send(Response::Sent("first".into(), Ok(json!({}))))
+            .unwrap();
+        a.tx.send(Response::Uploaded(
+            "first".into(),
+            Ok(json!({"uploadID":"first-upload"})),
+        ))
+        .unwrap();
+        a.poll();
+        assert!(!a.send_busy);
+        assert_eq!(a.editor.text, "Keep this unsent text");
+        assert!(a.pending_attachment.is_none());
+    }
+    #[test]
+    fn send_failure_keeps_text_and_allows_retry() {
+        let mut a = App::new(None, true);
+        let id = a.active.as_ref().unwrap().id.clone();
+        a.editor.set("Keep me".into());
+        a.send_busy = true;
+        a.tx.send(Response::Sent(id, Err("offline".into())))
+            .unwrap();
+        a.poll();
+        assert_eq!(a.editor.text, "Keep me");
+        assert!(!a.send_busy);
+        assert!(a.notice.contains("offline"));
+    }
     #[test]
     fn editor_preserves_graphemes() {
         let mut e = Editor::default();
