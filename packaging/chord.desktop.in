@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Chord
+GenericName=Chat and email
+Comment=Independent chat and email in a native Rust window
+Exec="@PROJECT_DIR@/scripts/launch.sh"
+Path=@PROJECT_DIR@
+Icon=@PROJECT_DIR@/assets/chord.svg
+Terminal=false
+StartupNotify=true
+StartupWMClass=dev.chord.Chord
+Categories=Network;InstantMessaging;Email;
+Keywords=chat;messenger;email;slack;discord;whatsapp;

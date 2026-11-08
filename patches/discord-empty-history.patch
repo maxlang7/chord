@@ -1,0 +1,18 @@
+--- a/backfill.go
++++ b/backfill.go
+@@ -84,7 +84,14 @@
+ 	} else {
+ 		lastMessage = portal.bridge.DB.Message.GetLast(portal.Key)
+ 	}
+-	if lastMessage == nil || serverLastMessageID == "" {
++	if lastMessage == nil {
++		// Recover rooms created before history import was enabled.
++		if limit > 0 && serverLastMessageID != "" {
++			portal.backfillLimited(log, source, limit, "", thread)
++		}
++		return
++	}
++	if serverLastMessageID == "" {
+ 		log.Debug().Msg("Not backfilling, no last message in database or no last message in metadata")
+ 		return
+ 	} else if !shouldBackfill(lastMessage.DiscordID, serverLastMessageID) {

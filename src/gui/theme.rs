@@ -1,0 +1,106 @@
+use eframe::egui::{self, Color32, FontId, TextStyle};
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum Theme {
+    #[default]
+    Gruvbox,
+    Dark,
+    Light,
+}
+#[derive(Clone, Copy)]
+pub struct Palette {
+    pub bg: Color32,
+    pub panel: Color32,
+    pub raised: Color32,
+    pub text: Color32,
+    pub muted: Color32,
+    pub line: Color32,
+    pub accent: Color32,
+    pub blue: Color32,
+    pub own: Color32,
+}
+impl Theme {
+    pub fn palette(self) -> Palette {
+        let rgb = |r, g, b| Color32::from_rgb(r, g, b);
+        match self {
+            Self::Gruvbox => Palette {
+                bg: rgb(29, 32, 33),
+                panel: rgb(40, 40, 40),
+                raised: rgb(60, 56, 54),
+                text: rgb(235, 219, 178),
+                muted: rgb(168, 153, 132),
+                line: rgb(70, 66, 60),
+                accent: rgb(184, 187, 38),
+                blue: rgb(131, 165, 152),
+                own: rgb(48, 53, 43),
+            },
+            Self::Dark => Palette {
+                bg: rgb(22, 24, 28),
+                panel: rgb(29, 32, 37),
+                raised: rgb(44, 48, 56),
+                text: rgb(233, 236, 242),
+                muted: rgb(151, 160, 176),
+                line: rgb(53, 59, 69),
+                accent: rgb(137, 180, 250),
+                blue: rgb(137, 180, 250),
+                own: rgb(33, 46, 64),
+            },
+            Self::Light => Palette {
+                bg: rgb(245, 246, 248),
+                panel: Color32::WHITE,
+                raised: rgb(232, 235, 241),
+                text: rgb(35, 40, 49),
+                muted: rgb(104, 113, 130),
+                line: rgb(219, 224, 233),
+                accent: rgb(69, 101, 166),
+                blue: rgb(69, 101, 166),
+                own: rgb(232, 239, 250),
+            },
+        }
+    }
+    pub fn apply(self, ctx: &egui::Context) {
+        let p = self.palette();
+        let mut visuals = if self == Self::Light {
+            egui::Visuals::light()
+        } else {
+            egui::Visuals::dark()
+        };
+        visuals.override_text_color = Some(p.text);
+        visuals.panel_fill = p.bg;
+        visuals.window_fill = p.panel;
+        visuals.extreme_bg_color = p.bg;
+        visuals.faint_bg_color = p.panel;
+        visuals.selection.bg_fill = p.raised;
+        visuals.selection.stroke = egui::Stroke::new(1., p.accent);
+        visuals.hyperlink_color = p.blue;
+        visuals.widgets.noninteractive.bg_fill = p.panel;
+        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1., p.line);
+        visuals.widgets.inactive.bg_fill = p.raised;
+        visuals.widgets.inactive.weak_bg_fill = p.raised;
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+        visuals.widgets.hovered.bg_fill = p.raised;
+        visuals.widgets.hovered.weak_bg_fill = p.raised;
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1., p.accent);
+        visuals.window_corner_radius = 12.into();
+        ctx.set_visuals(visuals);
+        ctx.style_mut(|s| {
+            s.spacing.item_spacing = egui::vec2(8., 8.);
+            s.spacing.button_padding = egui::vec2(11., 7.);
+            s.spacing.window_margin = egui::Margin::same(20);
+            s.text_styles
+                .insert(TextStyle::Body, FontId::proportional(15.));
+            s.text_styles
+                .insert(TextStyle::Button, FontId::proportional(14.));
+            s.text_styles
+                .insert(TextStyle::Small, FontId::proportional(12.));
+            s.text_styles
+                .insert(TextStyle::Heading, FontId::proportional(23.));
+        });
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Gruvbox => "Gruvbox dark",
+            Self::Dark => "Dark",
+            Self::Light => "Light",
+        }
+    }
+}

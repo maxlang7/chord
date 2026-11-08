@@ -1,0 +1,23 @@
+import {readFile,writeFile} from 'node:fs/promises';
+import assert from 'node:assert/strict';
+const config=JSON.parse(await readFile(new URL('../private/config.json',import.meta.url),'utf8'));
+assert.equal(config.matrixAccount.homeserver,'http://127.0.0.1:4808','Live checks only run against the private local homeserver');
+const base='http://127.0.0.1:4789';
+async function api(p,method='GET',body){const r=await fetch(base+p,{method,headers:{Authorization:'Bearer '+config.apiKey,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw new Error(d.error);return d}
+const room=await api('/api/v1/chats','POST',{type:'group',participantIDs:[],title:'Chord local self-test'});
+assert.ok(room.id?.startsWith('!'));assert.equal(room.network,'Matrix');
+const route='/api/v1/chats/'+encodeURIComponent(room.id)+'/messages';
+const first=await api(route,'POST',{text:'A private local engine check.'});
+const reply=await api(route,'POST',{text:'This reply must preserve its parent.',replyToMessageID:first.pendingMessageID});
+const reaction=route+'/'+encodeURIComponent(first.pendingMessageID)+'/reactions';
+await api(reaction,'POST',{reactionKey:'👍'});
+let page=await api(route);assert.ok(page.items.some(m=>m.id===reply.pendingMessageID&&m.linkedMessageID===first.pendingMessageID),'Reply relation must round-trip');
+assert.ok(page.items.find(m=>m.id===first.pendingMessageID).reactions.some(r=>r.reactionKey==='👍'),'Emoji reaction must round-trip');
+await api(route+'/'+encodeURIComponent(reply.pendingMessageID),'PUT',{text:'Edited in the private local test room.'});
+await api(reaction+'/'+encodeURIComponent('👍'),'DELETE');
+const upload=await api('/api/v1/assets/upload/base64','POST',{content:Buffer.from('A local attachment check.').toString('base64'),fileName:'chord-test.txt',mimeType:'text/plain'});
+await api(route,'POST',{text:'Attachment check',attachment:{uploadID:upload.uploadID}});
+page=await api(route);assert.ok(page.items.some(m=>m.attachments?.some(a=>a.fileName==='chord-test.txt')),'Attachment must round-trip');
+await api('/api/v1/chats/'+encodeURIComponent(room.id)+'/archive','POST',{archived:true});
+await writeFile(new URL('../private/live-engine-checks.json',import.meta.url),JSON.stringify({checkedAt:new Date().toISOString(),roomId:room.id,checks:['local encrypted send','native reply relation','reaction add','reaction remove','edit','attachment send','archive'],externalRecipients:0},null,2),{mode:0o600});
+console.log('Independent local engine checks passed. No external recipients.');

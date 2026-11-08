@@ -1,0 +1,13 @@
+/private/
+/node_modules/
+/.env
+/.env.*
+!/config.example.json
+/test-results/
+/.venv/
+/target/
+/vendor/ai-bridge/
+__pycache__/
+*.pyc
+/result
+/result-*

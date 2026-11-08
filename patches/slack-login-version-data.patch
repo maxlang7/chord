@@ -1,0 +1,11 @@
+--- a/pkg/connector/login-cookie.go
++++ b/pkg/connector/login-cookie.go
+@@ -131,8 +131,7 @@
+ 	client := makeSlackClient(&s.User.Log, token, cookieToken, "")
+ 	err := client.FetchVersionData(ctx)
+ 	if err != nil {
+ 		zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to fetch version data")
+-		return nil, err
+ 	}
+ 	info, err := client.ClientUserBootContext(ctx, time.Time{})
+ 	if err != nil {

@@ -1,0 +1,3 @@
+[submodule "vendor/pickle"]
+	path = vendor/pickle
+	url = https://github.com/beeper/pickle.git

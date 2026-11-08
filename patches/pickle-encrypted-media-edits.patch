@@ -1,0 +1,47 @@
+--- a/packages/pickle/native/internal/core/messages.go
++++ b/packages/pickle/native/internal/core/messages.go
+@@ -831,7 +831,6 @@
+ 	resp, err := retryMatrix(ctx, func() (*mautrix.RespGetRelations, error) {
+ 		return cli.GetRelations(ctx, roomID, id.EventID(eventID), &mautrix.ReqGetRelations{
+ 			RelationType: event.RelReplace,
+-			EventType:    event.EventMessage,
+ 			Dir:          mautrix.DirectionBackward,
+ 			Limit:        20,
+ 		})
+--- /dev/null
++++ b/packages/pickle/native/internal/core/chord_media_test.go
+@@ -0,0 +1,34 @@
++package core
++
++import (
++	"context"
++	"maunium.net/go/mautrix"
++	"maunium.net/go/mautrix/id"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++)
++
++func TestChordMediaReplacementIncludesEncryptedEvents(t *testing.T) {
++	sawAllTypes := false
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Content-Type", "application/json")
++		if r.URL.Path == "/_matrix/client/v1/rooms/!room:example/relations/$pending/m.replace" {
++			sawAllTypes = true
++			_, _ = w.Write([]byte(`{"chunk":[{"event_id":"$media-edit","room_id":"!room:example","type":"m.room.message","sender":"@alice:example","origin_server_ts":2000,"content":{"msgtype":"m.image","body":"* photo.jpg","m.relates_to":{"rel_type":"m.replace","event_id":"$pending"},"m.new_content":{"msgtype":"m.image","body":"photo.jpg","url":"mxc://example/photo","info":{"mimetype":"image/jpeg","size":1234}}}}]}`))
++			return
++		}
++		_, _ = w.Write([]byte(`{"chunk":[]}`))
++	}))
++	defer server.Close()
++	client, _ := mautrix.NewClient(server.URL, id.UserID("@max:example"), "local-test")
++	core := New(nil)
++	original := &MatrixMessageEvent{MatrixRawEvent: MatrixRawEvent{EventID: "$pending"}, Body: "Waiting for media from phone", Msgtype: "m.notice"}
++	result := core.applyLatestReplacement(context.Background(), client, id.RoomID("!room:example"), original)
++	if !sawAllTypes {
++		t.Fatal("replacement query filtered out encrypted media edits")
++	}
++	if result == nil || len(result.Attachments) != 1 || result.Msgtype != "m.image" {
++		t.Fatalf("media replacement lost: %#v", result)
++	}
++}

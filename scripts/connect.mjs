@@ -1,0 +1,8 @@
+import {readFile} from 'node:fs/promises';
+import qrcode from 'qrcode';
+import path from 'node:path';
+const id=process.argv[2]||'whatsapp',root=path.resolve(import.meta.dirname,'..');
+const config=JSON.parse(await readFile(path.join(root,'private/config.json'),'utf8'));
+async function api(route,body){const response=await fetch('http://127.0.0.1:4789'+route,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+config.apiKey,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});const data=await response.json();if(!response.ok)throw new Error(data.error);return data}
+let state=await api('/api/bridges/'+id+'/start',{}),previous='';
+while(true){if(state.type==='idle')state=await api('/api/bridges/'+id+'/start',{});const value=JSON.stringify(state);if(value!==previous){process.stdout.write('\x1b[2J\x1b[H\x1b[38;2;184;187;38m  CHORD  /  '+id.toUpperCase()+'\x1b[0m\n\n');console.log('  '+(state.instructions||''));console.log('');if(state.display_and_wait?.type==='qr'&&state.display_and_wait.data)console.log(await qrcode.toString(state.display_and_wait.data,{type:'terminal',small:true}));if(state.type==='complete'){console.log('\n  Connected. You can close this window.');await new Promise(()=>{})}if(state.type==='error'){console.log('\n  Press Enter to close.');process.stdin.resume();await new Promise(r=>process.stdin.once('data',r));break}if(['user_input','cookies'].includes(state.type)){console.log('  Open the Chord TUI and press a to complete these fields.');break}previous=value;}await new Promise(r=>setTimeout(r,1000));try{state=await api('/api/bridges/'+id+'/state')}catch{await new Promise(r=>setTimeout(r,1500));state={type:'idle'}}}
