@@ -119,6 +119,13 @@ fn result(r: anyhow::Result<Value>) -> Result<Value, String> {
     r.map_err(|e| format!("{e:#}"))
 }
 
+#[derive(Clone, Default)]
+struct Draft {
+    text: String,
+    reply: Option<Message>,
+    attachment: Option<Value>,
+    edit_message: Option<String>,
+}
 pub struct App {
     pub send_busy: bool,
     pub native_ui: bool,
@@ -161,7 +168,7 @@ pub struct App {
     pub last_login_poll: Instant,
     pub tx: UnboundedSender<Response>,
     pub rx: UnboundedReceiver<Response>,
-    drafts: HashMap<String, String>,
+    drafts: HashMap<String, Draft>,
     pub confirm_body: Option<Value>,
     pub confirm_action: String,
     pub status: Value,
@@ -533,17 +540,29 @@ impl App {
         }
     }
     pub fn open(&mut self, c: Conversation) {
-        if let Some(old) = &self.active
-            && !self.editor.text.is_empty()
-        {
-            self.drafts.insert(old.id.clone(), self.editor.text.clone());
+        if let Some(old) = &self.active {
+            let draft = Draft {
+                text: self.editor.text.clone(),
+                reply: self.reply.clone(),
+                attachment: self.pending_attachment.clone(),
+                edit_message: self.edit_message.clone(),
+            };
+            if draft.text.is_empty()
+                && draft.reply.is_none()
+                && draft.attachment.is_none()
+                && draft.edit_message.is_none()
+            {
+                self.drafts.remove(&old.id);
+            } else {
+                self.drafts.insert(old.id.clone(), draft);
+            }
         }
+        let draft = self.drafts.get(&c.id).cloned().unwrap_or_default();
         self.editor = Editor::default();
-        self.editor
-            .set(self.drafts.get(&c.id).cloned().unwrap_or_default());
-        self.reply = None;
-        self.edit_message = None;
-        self.pending_attachment = None;
+        self.editor.set(draft.text);
+        self.reply = draft.reply;
+        self.edit_message = draft.edit_message;
+        self.pending_attachment = draft.attachment;
         self.active = Some(c);
         self.focus = Focus::Messages;
         self.messages.clear();
@@ -861,7 +880,16 @@ impl App {
                 }
                 Response::Uploaded(id, r) => {
                     if self.active.as_ref().is_none_or(|c| c.id != id) {
-                        self.notice = "Attachment upload finished for the previous conversation. Reattach it there to send.".into();
+                        match r {
+                            Ok(v) => {
+                                self.drafts.entry(id).or_default().attachment = Some(
+                                    json!({"uploadID":v["uploadID"],"fileName":v["fileName"],"mimeType":v["mimeType"]}),
+                                );
+                                self.notice =
+                                    "Attachment ready in the previous conversation.".into();
+                            }
+                            Err(e) => self.notice = e,
+                        }
                         continue;
                     }
                     match r {
@@ -1553,6 +1581,32 @@ mod tests {
         assert_eq!(a.editor.text, "Keep me");
         assert!(!a.send_busy);
         assert!(a.notice.contains("offline"));
+    }
+    #[test]
+    fn switching_conversations_retains_reply_and_attachment_and_does_not_resurrect_erased_text() {
+        let mut a = App::new(None, true);
+        let first = a.active.clone().unwrap();
+        let second = Conversation {
+            id: "another".into(),
+            ..Default::default()
+        };
+        a.editor.set("Unsent".into());
+        a.reply = Some(Message {
+            id: "parent".into(),
+            ..Default::default()
+        });
+        a.pending_attachment = Some(json!({"uploadID":"file"}));
+        a.open(second.clone());
+        a.open(first.clone());
+        assert_eq!(a.editor.text, "Unsent");
+        assert_eq!(a.reply.as_ref().unwrap().id, "parent");
+        assert_eq!(a.pending_attachment.as_ref().unwrap()["uploadID"], "file");
+        a.editor.set(String::new());
+        a.reply = None;
+        a.pending_attachment = None;
+        a.open(second);
+        a.open(first);
+        assert!(a.editor.text.is_empty());
     }
     #[test]
     fn editor_preserves_graphemes() {

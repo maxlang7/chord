@@ -1,0 +1,6 @@
+{
+  "mailAccounts": [
+    {"id":"home","email":"you@example.com","credentialsFile":"/absolute/path/to/personal-google-oauth.json"},
+    {"id":"cmu","email":"you@andrew.cmu.edu","credentialsFile":"/absolute/path/to/cmu-google-oauth.json"}
+  ]
+}

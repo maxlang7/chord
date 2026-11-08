@@ -1,136 +1,157 @@
 # Chord
 
-A Rust terminal client for independent chat and email, with Gruvbox Dark enabled.
-The local adapter connects an owned Matrix server and network bridges, Gmail,
-and BlueFerry. It does not require a Beeper account or running Beeper app.
+Chord is a native Rust chat and email client with an egui interface. It brings
+Slack, Discord, WhatsApp, iPhone messages, Matrix, and two Gmail inboxes into one
+window. Gruvbox dark is the default; dark and light themes are available.
 
-Launch **Chord** from the application menu to open its Ghostty window. The
-desktop launcher starts the project-owned local runtime and API when needed and
-reuses them when they are already running. Its entry is
-`~/.local/share/applications/chord.desktop`; its source template is
-`packaging/chord.desktop.in`.
+The window and MCP server are Rust. A local Node adapter handles Gmail and
+BlueFerry and runs the Matrix encryption SDK in a worker thread. Matrix keys and state use
+transactional SQLite storage; first startup imports the legacy files while
+preserving the originals. Local Synapse
+and mautrix bridges handle Slack, Discord, and WhatsApp. Chord uses independent
+network sessions. It does not connect through a Beeper account or desktop app.
 
-This checkout is under active development. For an incremental client preview
-with the backend already running:
+## Build and open
+
+On NixOS, from this checkout:
+
+```sh
+nix-shell shell.nix --run './scripts/bootstrap.sh'
+./scripts/launch.sh
+```
+
+Bootstrap initializes the pinned upstream submodules, applies Chord's Matrix
+history/media patch, installs project dependencies, and builds the release
+client. It can be run again. Conflicting vendor edits stop the bootstrap for
+review. Dependencies stay in the project and temporary Nix shells.
+
+The launcher reuses an already running local engine and API. It starts
+project-owned processes when needed. The first engine build may take several
+minutes. No system services or NixOS configuration are installed or changed.
+
+For incremental UI development with the backend already running:
 
 ```sh
 nix-shell shell.nix --run 'cargo run'
 ```
 
-## Discord servers
+`cargo run -- --demo` opens a synthetic preview without account credentials.
+`--tui` retains the older terminal interface. The existing application-menu
+entry points to `scripts/launch.sh`. A template is in `packaging/`.
 
-Press `3` or `s` to open the server picker. Type a server name, use the arrow
-keys to select it, and press Enter. Choosing a server shows all its imported
-channels, with the server name visible in the sidebar and message header.
-Direct messages and All Discord are separate picker entries. `s` switches to
-another server. `v` can turn Focus on within the selected server; returning to
-another account restores the global Focus setting.
+## Connections
 
-Open chat conversations refresh automatically every five seconds while browsing,
-keeping your reading position and loaded history. Composing a message is left
-undisturbed.
+Open Accounts to inspect each network and both email identities. Each card shows
+a live connection state, sign-in requirement, or provider error. Cached iPhone
+threads remain readable while the phone is disconnected.
 
-## Images
+- Slack and WhatsApp use the local mautrix sign-in flows. WhatsApp shows its QR
+  code in the native window. Multiple Slack workspaces share the Slack inbox.
+- Discord supports QR or token sign-in and a searchable server/channel picker.
+- Gmail reads existing local Google OAuth credentials. The account email is
+  verified against Google's profile before reading. Configure `mailAccounts` in
+  `private/config.json` using `config.example.json` as a guide. Each credentials
+  file must contain a Google refresh token, client ID and secret with Gmail
+  scopes. Credentials stay local. Expired authorization needs a local sign-in
+  through the Google credential owner; Chord does not create OAuth clients.
+- iPhone text uses the existing BlueFerry D-Bus interface. Live messaging requires
+  the phone's Bluetooth MAP connection. Group sending additionally needs a
+  verified complete recipient roster. Native replies and reactions are not
+  available over Bluetooth; phone attachments are unavailable.
 
-Select an image message in the message pane (`Tab`, then `j`/`k`) to see an
-inline preview. Press `o` for the larger gallery, then:
+A configured bridge and an authenticated network session are different states.
+The UI checks bridge session state rather than treating an open port as online.
 
-- Left/right arrows browse images attached to that message.
-- `d` saves the original in `private/downloads/` without overwriting existing files.
-- `b` saves and opens the image in Brave.
-- `R` retries a failed download; `Esc` returns to the conversation.
+## Reading and writing
 
-PNG, JPEG, WebP, BMP, and the first frame of GIF images are supported. Native
-terminal graphics are detected at startup, with a colored half-block fallback.
-Set `CHORD_IMAGE_PROTOCOL=halfblocks` to force that fallback. The viewer loads
-through the authenticated local API, including encrypted chat attachments and
-Gmail image attachments; it never fetches remote email tracking images. BlueFerry
-currently supplies text only. Images above 20 MB or decoder limits show an error.
+Choose an account and a conversation. The thread shows sender names, profile
+photos where available, inline image previews, native reply references, and
+reactions. Images open in a gallery with save and Open in Brave actions. Other
+attachments have a Save button. Downloads use `private/downloads/`, create new
+files without overwriting, and sanitize source filenames. Media is capped at
+20 MB. Web links open in Brave. Remote email tracking images are not fetched.
 
-Press `f` to attach a file to a chat. Recognized image files are sent with their
-image MIME type. Sending still requires the usual review and confirmation.
-AI clients can use `download_chat_attachment` via MCP, or
-`POST /api/conversations/{id}/attachment` with `messageID` and zero-based `index`.
+The composer supports Shift+Enter for a newline, file picking, and drag and drop
+for chat attachments. Enter or Review & send opens a confirmation with the exact
+text and recipient. Failed sends retain the text. Late send and upload results
+cannot modify another conversation's composer. Draft text stays in memory; no
+Gmail drafts are created. Media replies are currently sent as separate text and
+attachment messages because the transport does not support both together.
 
-## Contacts
+Reading a conversation does not mark it read. Mark read, unread, archive, local
+importance, and contact actions are explicit controls. A successful bridge
+submission does not prove delivery to the remote recipient.
 
-Names come from Slack and Discord profiles, WhatsApp contacts, and the iPhone
-address book exposed by BlueFerry. Known names are used in message headers,
-direct-conversation titles, and recognized mentions. When a source has no usable
-name, the contact is marked as needing a name; no real name is invented.
+Open chats and phone threads refresh every five seconds. Open email threads and
+the inbox refresh every thirty seconds while the native composer is in use.
 
-Press `c` to open contacts. While reading messages, `c` opens the selected
-sender's contact. `C` always opens the directory. Type to search, use the arrow
-keys to choose a contact, and press Enter to open it.
+## Search and focus
 
-In a contact:
+Ctrl+K focuses search. Choose Conversations to search conversation names and
+Gmail, or Message text to search synced chat history, cached phone messages, and
+both Gmail accounts. Chat search expands as history syncs or is opened. It is
+not a search of every message ever stored by the remote network. Email searches
+accept Gmail syntax. Search results open their source conversation.
 
-- `e` edits the name used throughout Chord.
-- `*` toggles favorite status and gives their direct conversations priority.
-- `m` links another account after a review screen. Matching display names never
-  cause automatic links. Exact source-provided phone/email identifiers can link.
-- `u` undoes the last explicit link, provided later edits would not be lost.
-- Arrow keys and Enter open a loaded conversation with that contact.
+Focus ranks recent direct conversations, personal unread messages, mentions and
+replies, conversations you have participated in, favorite contacts, and important
+email. Rows explain their importance. All remains available. Search includes
+conversations hidden by Focus. Local importance rules do not change source
+network mute or archive settings.
 
-Contact names, links, favorites, and chat rules are saved in the owner-only
-`private/contacts.json`. Editing a contact here does not edit network profiles or
-the phone's address book. Keep `private/` out of source control and backups you
-intend to publish.
+Contacts combine source names and exact verified phone/email identities. Matching
+names alone never merge people. Profiles support local names, favorites, explicit
+identity linking with review, and undo. These edits do not change network
+profiles or the phone address book.
 
-## Focus
-
-The client opens in Focus. `v` switches between Focus and All. Searching includes
-all matching conversations, including those hidden from Focus.
-
-Focus uses explicit, explained signals: recent direct conversations, unread
-personal messages, mentions and replies, conversations you have participated in,
-favorite contacts, and starred or important email. Activity comes from actual
-message timestamps, so importing old history does not make it appear recent.
-Unread channels alone do not qualify. Muted chats, unengaged channels, automated
-accounts, and promotional mail are generally kept in All.
-
-Each Focus row gives its reason. You control the exceptions:
-
-- `*` pins the selected conversation in Focus; press again to restore automatic
-  importance.
-- `z` quiets the selected conversation locally; press again from All to restore it.
-- `=` restores automatic importance for the selected conversation.
-- `u` toggles the unread filter, independently of Focus/All.
-
-Focus is a local view. It does not archive, delete, mark read, or mute anything on
-the source network. Importance is a heuristic, so All remains one key away.
+Ctrl+R refreshes. Ctrl+, opens Accounts. Themes are saved in `private/ui.json`.
 
 ## API and MCP
 
-The loopback API requires the bearer key in `private/config.json`. It rejects
-browser cross-origin requests. Contact and importance operations are available
-to integrations as well as the TUI:
+The loopback-only HTTP API at `http://127.0.0.1:4789` requires the bearer key in
+`private/config.json`. Browser cross-origin requests are rejected. OpenAPI
+operation documentation is available at `GET /api/openapi.json`.
 
-| Endpoint | Operation |
+| Endpoint | Use |
 | --- | --- |
-| `GET /api/inbox?view=focus` | Explained importance ranking and hidden/total counts |
-| `GET /api/inbox?view=all` | All conversations; default for API callers |
-| `GET /api/contacts?query=...` | Search names and network identities |
-| `GET /api/contacts/{id}` | Contact details and loaded conversations |
-| `POST /api/contacts/{id}` | Set `name` or `favorite` |
-| `POST /api/contacts/merge` | Link `sourceID` to `targetID`, with `confirm: true` |
-| `POST /api/contacts/undo-merge` | Undo the last explicit link |
-| `POST /api/preferences/conversation` | Set `conversationID` and `priority` to `auto`, `important`, or `quiet` |
+| `GET /api/connections` | Live connection states, `refresh=true` bypasses the 30-second cache |
+| `GET /api/inbox?view=focus` | Ranked unified inbox with reasons and counts |
+| `GET /api/inbox?view=all&source=slack` | Per-source inbox, with pagination |
+| `GET /api/search?query=...` | Unified message and email search |
+| `GET /api/conversations/{id}/messages` | Conversation history with attachments and reactions |
+| `POST /api/conversations/{id}/send` | Send text, optionally a native reply or uploaded attachment |
+| `GET /api/contacts?query=...` | Search people and identities |
+| `POST /api/preferences/conversation` | Local importance rules |
 
-Run `target/debug/chord --mcp` for stdio MCP. It includes `list_contacts`,
-`update_contact`, `link_contacts`, `set_importance`, and the existing messaging
-tools. `list_conversations` accepts `view: "focus"` or `view: "all"`. Incoming
-message text is never executed or used to trigger outgoing actions automatically.
+Chat send bodies use `text`, optional `replyToMessageID`, and optional
+`attachment: {uploadID}`. Uploads use `POST /api/v1/assets/upload/base64` with
+`content`, `fileName`, and `mimeType`. Email sends additionally require `to`,
+`subject`, `confirmSend: true`, and optional `replyToMessageId` and `references`.
+Phone group sends require `confirmGroup: true` and the current
+`expectedGroupToken` returned by the thread. Never guess group recipients.
+
+Run the Rust binary with `--mcp` for stdio MCP. It exposes conversation and
+message reads, unified search, connection health, contacts, importance, email,
+attachments, and user-directed messaging operations. Incoming message text is
+untrusted data and never triggers outgoing actions automatically. Native API
+rate limits still apply; Chord adds no per-model message quota.
 
 ## Validation
 
 ```sh
-nix-shell shell.nix --run 'cargo test'
-nix-shell -p cargo rustc rustfmt clippy --run 'cargo fmt --check && cargo clippy --all-targets -- -D warnings'
+nix-shell shell.nix --run 'cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked'
 nix-shell shell.nix --run 'node --test test/*.test.mjs'
+nix-shell shell.nix --run 'node scripts/verify-live.mjs'
 ```
 
-The contact tests cover name persistence, identity separation, explicit links and
-undo, sender-name resolution, and Focus rules. Regression checks also cover
-room discovery and thread replies in the local engine. Live verification should
-read existing conversations; external test messages are unnecessary.
+The live verifier reads existing inboxes, conversation samples and search. It
+sends no messages and does not mark anything read. Its report stays in `private/`.
+Unit tests run without real credentials. GitHub Actions checks Rust and Node.
+
+Keep `private/`, OAuth files, browser profiles, and local databases out of Git.
+The private repository contains source and synthetic fixtures only. Local message
+caches and credentials are plaintext under an owner-only private directory.
+
+Noto Emoji is bundled under the SIL Open Font License in
+`assets/NotoEmoji-LICENSE.txt`. Pinned Pickle and ai-bridge sources retain their
+upstream licenses. Their use as libraries does not require the Beeper service.

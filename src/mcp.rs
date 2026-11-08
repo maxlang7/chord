@@ -15,6 +15,20 @@ fn tool(
 pub fn tools() -> Vec<Value> {
     vec![
         tool(
+            "connection_status",
+            "Check live bridge sessions, both Gmail identities, and iPhone Bluetooth availability.",
+            json!({}),
+            vec![],
+            true,
+        ),
+        tool(
+            "search_messages",
+            "Search synced chat history, cached iPhone messages, and both Gmail accounts. Results identify the source conversation. Search does not mark messages read.",
+            json!({"query":{"type":"string"}}),
+            vec!["query"],
+            true,
+        ),
+        tool(
             "list_discord_servers",
             "List imported Discord servers and their channel counts.",
             json!({}),
@@ -205,6 +219,7 @@ async fn call(api: &Api, name: &str, mut args: Value) -> Result<Value> {
     }
     let get = match name {
         "status" => Some("/api/status"),
+        "connection_status" => Some("/api/connections"),
         "list_accounts" => Some("/api/bridges"),
         "list_discord_servers" => Some("/api/discord/servers"),
         "iphone_status" => Some("/api/blueferry/status"),
@@ -218,6 +233,13 @@ async fn call(api: &Api, name: &str, mut args: Value) -> Result<Value> {
         return api.get(p).await;
     }
     match name {
+        "search_messages" => {
+            api.get(&format!(
+                "/api/search?query={}",
+                urlencoding::encode(args["query"].as_str().unwrap_or(""))
+            ))
+            .await
+        }
         "list_conversations" => {
             api.inbox(
                 args["source"].as_str().unwrap_or("all"),

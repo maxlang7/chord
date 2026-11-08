@@ -1,4 +1,4 @@
-import {readFile,writeFile,mkdir} from 'node:fs/promises';
+import {readFile,writeFile,mkdir,rename} from 'node:fs/promises';
 import path from 'node:path';
 import {randomBytes} from 'node:crypto';
 import {openMatrixStore} from './matrix-store.mjs';
@@ -51,7 +51,14 @@ export class MatrixProvider{
   this.scheduleSave();
   this.lastRoomRefresh=Date.now();
  }
- scheduleSave(){if(!this.persist)return;clearTimeout(this.flushTimer);this.flushTimer=setTimeout(()=>{writeFile(path.join(this.dataDir,'matrix-timeline.json'),JSON.stringify({chats:[...this.chats],timelines:[...this.timelines],reactions:[...this.reactions],mediaFiles:[...this.mediaFiles]}),{mode:0o600}).catch(e=>this.error=e.message)},300)}
+ scheduleSave(){if(!this.persist)return;clearTimeout(this.flushTimer);this.flushTimer=setTimeout(()=>{this.save().catch(e=>this.error=e.message)},300)}
+ async save(){
+  if(!this.persist)return;
+  const snapshot=JSON.stringify({chats:[...this.chats],timelines:[...this.timelines],reactions:[...this.reactions],mediaFiles:[...this.mediaFiles]});
+  this.saveWork=(this.saveWork||Promise.resolve()).catch(()=>{}).then(async()=>{const file=path.join(this.dataDir,'matrix-timeline.json');await writeFile(file+'.pending',snapshot,{mode:0o600});await rename(file+'.pending',file)});
+  return this.saveWork;
+ }
+
  onEvent(event){
   if(event.kind==='invite'&&event.roomId&&/^@(slack|discord|whatsapp)(bot|_).*:chord\.local$/.test(event.inviter||'')){this.client.rooms.join({roomIdOrAlias:event.roomId}).then(()=>this.refreshRooms()).catch(e=>this.error=e.message);return}
   if(event.kind==='error'||event.kind==='decryptionError'){this.error=event.error;return}
@@ -149,4 +156,4 @@ export async function getMatrix({config,dataDir}){
  })().catch(e=>{boot=null;throw e});return boot;
 }
 export async function matrixRequest(context,endpoint,method,body){return (await getMatrix(context)).request(endpoint,method,body)}
-export async function closeMatrix(){const provider=instance||await boot?.catch(()=>null);if(!provider)return;clearTimeout(provider.flushTimer);if(provider.subscription)await provider.subscription.stop();await provider.client.close();if(provider.persist)await writeFile(path.join(provider.dataDir,'matrix-timeline.json'),JSON.stringify({chats:[...provider.chats],timelines:[...provider.timelines],reactions:[...provider.reactions],mediaFiles:[...provider.mediaFiles]}),{mode:0o600});provider.store?.close();instance=null;boot=null;}
+export async function closeMatrix(){const provider=instance||await boot?.catch(()=>null);if(!provider)return;clearTimeout(provider.flushTimer);if(provider.subscription)await provider.subscription.stop();await provider.client.close();clearTimeout(provider.flushTimer);await provider.save();provider.store?.close();instance=null;boot=null;}

@@ -34,6 +34,21 @@ pub struct Gui {
 impl Gui {
     pub fn new(mut app: App, ctx: &egui::Context) -> Self {
         app.native_ui = true;
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "emoji".into(),
+            std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+                "../assets/NotoEmoji.ttf"
+            ))),
+        );
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            fonts
+                .families
+                .entry(family)
+                .or_default()
+                .push("emoji".into());
+        }
+        ctx.set_fonts(fonts);
         let settings_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("private/ui.json");
         let settings: Value = std::fs::read(&settings_path)
             .ok()
@@ -143,18 +158,7 @@ impl Gui {
                         .as_array()
                         .and_then(|v| v.iter().find(|c| c["id"] == connection_id))
                         .and_then(|c| c["connected"].as_bool());
-                    let title = if compact {
-                        short.to_owned()
-                    } else {
-                        format!(
-                            "{} {label}",
-                            match connected {
-                                Some(true) => "●",
-                                Some(false) => "○",
-                                None => " ",
-                            }
-                        )
-                    };
+                    let title = if compact { short } else { label };
                     let selected = self.app.source == index;
                     let button = egui::Button::new(RichText::new(title).color(if selected {
                         p.accent
@@ -168,7 +172,18 @@ impl Gui {
                     })
                     .corner_radius(9)
                     .min_size(egui::vec2(ui.available_width(), 38.));
-                    if ui.add(button).on_hover_text(label).clicked() {
+                    let response = ui.add(button).on_hover_text(label);
+                    if let Some(online) = connected {
+                        let center =
+                            egui::pos2(response.rect.right() - 8., response.rect.center().y);
+                        if online {
+                            ui.painter().circle_filled(center, 3., p.accent);
+                        } else {
+                            ui.painter()
+                                .circle_stroke(center, 3., egui::Stroke::new(1., p.muted));
+                        }
+                    }
+                    if response.clicked() {
                         if index == 2 {
                             self.app.open_servers();
                         } else {
@@ -347,6 +362,9 @@ impl Gui {
                         self.app.refresh(false);
                     }
                 });
+                if let (Some(total), Some(important)) = (self.app.inbox_summary["total"].as_u64(), self.app.inbox_summary["important"].as_u64()) {
+                    ui.label(RichText::new(format!("{important} in Focus · {total} total")).small().color(p.muted));
+                }
                 ui.add_space(10.);
                 ui.separator();
                 let chats: Vec<Conversation> = self.app.visible().into_iter().cloned().collect();
@@ -364,6 +382,11 @@ impl Gui {
                                 })
                                 .color(p.muted),
                             );
+                        }
+                        if chats.is_empty() && !self.app.loading && self.app.focus_enabled() && self.app.inbox_summary["total"].as_u64().unwrap_or(0) > 0
+                            && ui.button(format!("Show all {} conversations", self.app.inbox_summary["total"].as_u64().unwrap_or(0))).clicked() {
+                            if self.app.discord_scope.is_some() { self.app.server_focus = false; } else { self.app.focus_view = false; }
+                            self.app.refresh(false);
                         }
                         for (chat_index, chat) in chats.iter().enumerate() {
                             let active = self.app.active.as_ref().is_some_and(|c| c.id == chat.id);
@@ -403,9 +426,8 @@ impl Gui {
                                                     .truncate(),
                                                 );
                                                 if chat.unread {
-                                                    ui.label(
-                                                        RichText::new("●").small().color(p.accent),
-                                                    );
+                                                    let (rect, _) = ui.allocate_exact_size(egui::vec2(8., 8.), egui::Sense::hover());
+                                                    ui.painter().circle_filled(rect.center(), 3., p.accent);
                                                 }
                                             });
                                             ui.add(
@@ -437,6 +459,7 @@ impl Gui {
                                     ui.id().with(&chat.id),
                                     egui::Sense::click(),
                                 )
+                                .on_hover_text(chat.importance["reasons"].as_array().map(|v| v.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n")).unwrap_or_default())
                                 .clicked()
                             {
                                 self.app.selection = chat_index;
@@ -783,6 +806,32 @@ impl Gui {
                         }
                         if !m.text.is_empty() {
                             ui.add(egui::Label::new(&m.text).wrap().selectable(true));
+                            let links = message_links(&m.text);
+                            if !links.is_empty() {
+                                ui.horizontal_wrapped(|ui| {
+                                    for link in links {
+                                        let host = reqwest::Url::parse(&link)
+                                            .ok()
+                                            .and_then(|u| u.host_str().map(str::to_owned))
+                                            .unwrap_or_else(|| "link".into());
+                                        if ui
+                                            .button(
+                                                RichText::new(format!("Open {host}")).color(p.blue),
+                                            )
+                                            .on_hover_text(&link)
+                                            .clicked()
+                                            && let Err(e) = std::process::Command::new("brave")
+                                                .arg(&link)
+                                                .stdin(std::process::Stdio::null())
+                                                .stdout(std::process::Stdio::null())
+                                                .stderr(std::process::Stdio::null())
+                                                .spawn()
+                                        {
+                                            self.app.notice = format!("Could not open Brave: {e}");
+                                        }
+                                    }
+                                });
+                            }
                         }
                         for (attachment_index, a) in m.attachments.iter().enumerate() {
                             let target = Target {
@@ -1046,7 +1095,7 @@ impl Gui {
                         if ui
                             .add_enabled(
                                 can_send,
-                                egui::Button::new(RichText::new("Review & send  ↑").color(p.bg))
+                                egui::Button::new(RichText::new("Review & send").color(p.bg))
                                     .fill(p.accent)
                                     .corner_radius(7),
                             )
@@ -1408,7 +1457,7 @@ impl Gui {
                                 ui.horizontal(|ui| {
                                     ui.colored_label(
                                         if connected { p.accent } else { p.muted },
-                                        if connected { "●" } else { "○" },
+                                        if connected { "Online" } else { "Offline" },
                                     );
                                     ui.label(
                                         RichText::new(account["name"].as_str().unwrap_or(id))
@@ -1634,6 +1683,18 @@ impl Gui {
 impl eframe::App for Gui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.app.poll();
+        if self.gallery.is_empty()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.app.mode = if self.app.mode == Mode::Confirm {
+                self.app.confirm_body = None;
+                Mode::Compose
+            } else if self.app.editor.text.is_empty() {
+                Mode::Browse
+            } else {
+                Mode::Compose
+            };
+        }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::K)) {
             self.search_focus = true;
         }
@@ -1710,6 +1771,23 @@ impl eframe::App for Gui {
         ctx.request_repaint_after(Duration::from_millis(250));
     }
 }
+fn message_links(text: &str) -> Vec<String> {
+    let mut links = vec![];
+    for word in text.split_whitespace() {
+        let candidate = word
+            .trim_start_matches(['(', '[', '<'])
+            .trim_end_matches(['.', ',', ';', ')', ']', '>']);
+        if let Ok(url) = reqwest::Url::parse(candidate)
+            && matches!(url.scheme(), "http" | "https")
+            && url.host_str().is_some()
+            && !links.iter().any(|s| s == candidate)
+            && links.len() < 12
+        {
+            links.push(candidate.to_owned());
+        }
+    }
+    links
+}
 fn initials(name: &str) -> String {
     let result: String = name
         .split_whitespace()
@@ -1745,6 +1823,15 @@ pub fn run(app: App) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn external_links_only_accept_web_urls_and_deduplicate() {
+        assert_eq!(
+            message_links(
+                "See https://example.test/path. https://example.test/path file:///tmp/test javascript:alert(1)"
+            ),
+            vec!["https://example.test/path"]
+        );
+    }
     #[test]
     fn initials_handle_unicode_and_empty_names() {
         assert_eq!(initials("Alex Chen"), "AC");

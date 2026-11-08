@@ -1,0 +1,650 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Chord local API",
+    "version": "0.3.0",
+    "description": "Loopback-only API. Send only with explicit user direction. Email requires confirmSend=true. No external draft storage. See README for payloads and search coverage."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:4789"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "paths": {
+    "/api/status": {
+      "get": {
+        "summary": "Runtime configuration",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        }
+      }
+    },
+    "/api/connections": {
+      "get": {
+        "summary": "Live connection status",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        }
+      }
+    },
+    "/api/inbox": {
+      "get": {
+        "summary": "Unified inbox with source, view, query, unread, cursor and server parameters",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        }
+      }
+    },
+    "/api/search": {
+      "get": {
+        "summary": "Search synced chats, cached phone messages and Gmail using query",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        }
+      }
+    },
+    "/api/contacts": {
+      "get": {
+        "summary": "Search contacts using query",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        }
+      }
+    },
+    "/api/discord/servers": {
+      "get": {
+        "summary": "Discord server directory",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        }
+      }
+    },
+    "/api/bridges": {
+      "get": {
+        "summary": "Network bridge status",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        }
+      }
+    },
+    "/api/blueferry/status": {
+      "get": {
+        "summary": "Bluetooth connection status",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        }
+      }
+    },
+    "/api/mail/accounts": {
+      "get": {
+        "summary": "Configured mail accounts",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        }
+      }
+    },
+    "/api/matrix/crypto": {
+      "get": {
+        "summary": "Matrix encryption state",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        }
+      }
+    },
+    "/api/conversations/{conversationID}/messages": {
+      "get": {
+        "summary": "Read messages",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "conversationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/conversations/{conversationID}/details": {
+      "get": {
+        "summary": "Read details",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "conversationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/conversations/{conversationID}/send": {
+      "post": {
+        "summary": "send operation",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "conversationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/conversations/{conversationID}/edit": {
+      "post": {
+        "summary": "edit operation",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "conversationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/conversations/{conversationID}/reaction": {
+      "post": {
+        "summary": "reaction operation",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "conversationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/conversations/{conversationID}/attachment": {
+      "post": {
+        "summary": "attachment operation",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "conversationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/conversations/{conversationID}/read": {
+      "post": {
+        "summary": "read operation",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "conversationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/conversations/{conversationID}/unread": {
+      "post": {
+        "summary": "unread operation",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "conversationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/conversations/{conversationID}/archive": {
+      "post": {
+        "summary": "archive operation",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "conversationID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/bridges/{network}/start": {
+      "post": {
+        "summary": "Bridge sign-in start",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "network",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/bridges/{network}/submit": {
+      "post": {
+        "summary": "Bridge sign-in submit",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "network",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/contacts/{contactID}": {
+      "get": {
+        "summary": "Contact profile",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "contactID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "summary": "Update local contact name or favorite",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "contactID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/preferences/conversation": {
+      "post": {
+        "summary": "Set local importance rule",
+        "responses": {
+          "200": {
+            "description": "JSON result"
+          },
+          "401": {
+            "description": "Missing or invalid bearer key"
+          },
+          "500": {
+            "description": "Provider or runtime error"
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
