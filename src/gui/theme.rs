@@ -70,16 +70,16 @@ impl Theme {
         visuals.extreme_bg_color = p.bg;
         visuals.faint_bg_color = p.panel;
         visuals.selection.bg_fill = p.raised;
-        visuals.selection.stroke = egui::Stroke::new(1., p.accent);
+        visuals.selection.stroke = egui::Stroke::new(1.0_f32, p.accent);
         visuals.hyperlink_color = p.blue;
         visuals.widgets.noninteractive.bg_fill = p.panel;
-        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1., p.line);
+        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, p.line);
         visuals.widgets.inactive.bg_fill = p.raised;
         visuals.widgets.inactive.weak_bg_fill = p.raised;
         visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
         visuals.widgets.hovered.bg_fill = p.raised;
         visuals.widgets.hovered.weak_bg_fill = p.raised;
-        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1., p.accent);
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, p.accent);
         visuals.window_corner_radius = 12.into();
         ctx.set_visuals(visuals);
         ctx.style_mut(|s| {

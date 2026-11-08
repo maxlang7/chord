@@ -179,8 +179,11 @@ impl Gui {
                         if online {
                             ui.painter().circle_filled(center, 3., p.accent);
                         } else {
-                            ui.painter()
-                                .circle_stroke(center, 3., egui::Stroke::new(1., p.muted));
+                            ui.painter().circle_stroke(
+                                center,
+                                3.,
+                                egui::Stroke::new(1.0_f32, p.muted),
+                            );
                         }
                     }
                     if response.clicked() {
@@ -1044,7 +1047,7 @@ impl Gui {
         let enabled = chat.can_send && !self.file_busy && !self.app.send_busy;
         egui::Frame::new()
             .fill(p.panel)
-            .stroke(egui::Stroke::new(1., p.line))
+            .stroke(egui::Stroke::new(1.0_f32, p.line))
             .corner_radius(12)
             .inner_margin(12)
             .show(ui, |ui| {
