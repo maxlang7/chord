@@ -8,8 +8,10 @@ export async function searchMessages(query,{matrix,blue,mailAccounts,listMail,di
    const page=await matrix('/v1/messages/search?query='+encodeURIComponent(query)+'&limit=20');
    for(const m of page.items||[]){
     const id='matrix:'+m.chatID;
-    const c=directory.conversations.get(id);
-    if(c)items.push({conversation:c,message:m});
+    let c=directory.conversations.get(id);
+    const room=m.conversation;
+    if(!c&&room)c=directory.enrichConversation({id,remoteId:room.id,kind:'chat',source:room.accountID,title:room.title,preview:room.preview?.text||'',timestamp:room.lastActivity,participants:(room.participants?.items||[]).map(p=>p.id),canReply:!room.isReadOnly,canReact:!room.isReadOnly,canSend:!room.isReadOnly});
+    if(c){const {conversation,...message}=m;items.push({conversation:c,message})}
    }
   }catch(e){fail('matrix',e)}})(),
   (async()=>{try {

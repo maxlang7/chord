@@ -7,6 +7,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {mailAccounts,listMail,readMail,modifyMail,sendMail,mailAttachment,checkMail} from './mail-provider.mjs';
 import {Directory} from './directory.mjs';
+import {matrixAction,closeMatrixWorker} from './matrix-transport.mjs';
 import {searchMessages} from './search.mjs';
 import {connectionStates} from './connections.mjs';
 import {avatarService} from './avatars.mjs';
@@ -37,7 +38,7 @@ export function presentThreads(threads){return threads.map(t=>({...t,confirmatio
 export async function matrix(endpoint,method='GET',body){
  if(process.env.CHORD_TEST_TRANSPORT_URL){const r=await fetch(process.env.CHORD_TEST_TRANSPORT_URL+endpoint,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw Object.assign(new Error(d.error),{status:r.status});return d}
  if(!config.matrixAccount){if(endpoint==='/v1/accounts')return [];if(endpoint.startsWith('/v1/chats?'))return {items:[],hasMore:false};throw Object.assign(new Error('Start the local Chord runtime first.'),{status:503})}
- const {matrixRequest}=await import('./matrix-provider.mjs');return matrixRequest({config,dataDir},endpoint,method,body);
+ return matrixAction({config,dataDir},'request',endpoint,method,body);
 }
 async function inbox(url){
  await directory.refresh();
@@ -87,14 +88,7 @@ export const server=http.createServer(async(req,res)=>{try{
    if(typeof b.messageID!=='string'||!b.messageID)throw Object.assign(new Error('messageID is required'),{status:400});
    if(c.kind==='mail')return json(res,await mailAttachment(c.account,b.messageID,b.attachmentID));
    const index=b.index??0;if(!Number.isSafeInteger(index)||index<0)throw Object.assign(new Error('Attachment index must be a nonnegative integer'),{status:400});
-   const {getMatrix}=await import('./matrix-provider.mjs');const provider=await getMatrix({config,dataDir});
-   const message=await provider.client.messages.get({roomId:c.remote,eventId:b.messageID});
-   const attachment=provider.normalizeMessage(message.message).attachments[index];
-   if(!attachment)throw Object.assign(new Error('Attachment not found'),{status:404});
-   if(attachment.fileSize>20*1024*1024)throw Object.assign(new Error('Attachment exceeds 20 MB'),{status:413});
-   const data=await provider.download(attachment.id),bytes=Buffer.from(data.bytes);
-   if(bytes.length>20*1024*1024)throw Object.assign(new Error('Attachment exceeds 20 MB'),{status:413});
-   return json(res,{data:bytes.toString('base64url'),fileName:attachment.fileName,mimeType:attachment.mimeType,size:bytes.length});
+   return json(res,await matrixAction({config,dataDir},'attachment',c.remote,b.messageID,index));
   }
   if(['archive','read','unread'].includes(action)&&req.method==='POST'){
    if(c.kind==='mail')return json(res,await modifyMail(c.account,c.remote,action==='archive'?{archived:b.archived??true}:{read:action==='read'}));
@@ -113,12 +107,12 @@ export const server=http.createServer(async(req,res)=>{try{
  const mail=p.match(/^\/api\/mail\/(home|cmu)\/(threads|thread|attachment|send)(?:\/([^/]+))?$/);if(mail){const [,a,action,id]=mail;if(action==='threads')return json(res,await listMail(a,{query:url.searchParams.get('query')||undefined,cursor:url.searchParams.get('cursor')}));if(action==='thread')return json(res,await readMail(a,id));if(action==='attachment')return json(res,await mailAttachment(a,url.searchParams.get('messageID'),url.searchParams.get('attachmentID')));if(action==='send'&&req.method==='POST')return json(res,await sendMail(a,await input(req)))}
  if(p==='/api/bridges')return json(res,{items:await Promise.all((config.bridges||[]).map(async b=>{try{return {id:b.id,name:b.name,available:true,info:await bridgeInfo(config,b.id)}}catch(e){return {id:b.id,name:b.name,available:false,error:e?.message||String(e)}}}))});
  const bridge=p.match(/^\/api\/bridges\/(whatsapp|slack|discord)\/(start|state|submit|guilds|guild)$/);if(bridge){const [,id,action]=bridge;if(action==='state')return json(res,loginState(id));if(action==='guilds')return json(res,await guilds(config));const b=await input(req);if(action==='start')return json(res,await startBridgeLogin(config,id,b.flow));if(action==='submit')return json(res,await submitBridgeLogin(config,id,b));if(action==='guild')return json(res,await enableGuild(config,b.guildID))}
- if(p==='/api/matrix/crypto'){const {getMatrix}=await import('./matrix-provider.mjs');const provider=await getMatrix({config,dataDir});return json(res,{crypto:await provider.client.crypto.status(),lastError:provider.error})}
- if(p==='/api/matrix/diagnostics'){const {getMatrix}=await import('./matrix-provider.mjs');const provider=await getMatrix({config,dataDir});const roomId=url.searchParams.get('roomID');if(!roomId)throw new Error('A roomID is required');const raw=await provider.raw('GET','/_matrix/client/v3/rooms/'+encodeURIComponent(roomId)+'/messages',undefined,{dir:'b',limit:'50'});const page=await provider.client.messages.list({roomId,limit:50,direction:'backward'});return json(res,{rawCount:raw.chunk?.length,rawTypes:(raw.chunk||[]).reduce((counts,e)=>(counts[e.type]=(counts[e.type]||0)+1,counts),{}),sdkKeys:Object.keys(page),messageCount:page.messages?.length,messageKeys:page.messages?.[0]?Object.keys(page.messages[0]):[],crypto:await provider.client.crypto.status(),lastError:provider.error})}
- if(p==='/api/matrix/refresh'&&req.method==='POST'){const {getMatrix}=await import('./matrix-provider.mjs');await (await getMatrix({config,dataDir})).refreshRooms();return json(res,{success:true})}
+ if(p==='/api/matrix/crypto')return json(res,await matrixAction({config,dataDir},'crypto'));
+ if(p==='/api/matrix/diagnostics'){const roomId=url.searchParams.get('roomID');if(!roomId)throw new Error('A roomID is required');return json(res,await matrixAction({config,dataDir},'diagnostics',roomId))}
+ if(p==='/api/matrix/refresh'&&req.method==='POST')return json(res,await matrixAction({config,dataDir},'refresh'));
  if(p==='/api/openapi.json')return json(res,JSON.parse(await readFile(path.join(root,'openapi.json'),'utf8')));
  if(p==='/api/audit')return json(res,JSON.parse(await readFile(path.join(dataDir,'audit.json'),'utf8')));
  return json(res,{error:'Not found'},404);
  }catch(e){json(res,{error:e?.message||String(e)},e.status||500)}});
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))server.listen(port,'127.0.0.1',()=>console.log('Chord API on http://127.0.0.1:'+port));
-if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))for(const signal of ['SIGINT','SIGTERM'])process.once(signal,async()=>{setTimeout(()=>process.exit(0),3000).unref();try{const {closeMatrix}=await import('./matrix-provider.mjs');await closeMatrix()}finally{server.close(()=>process.exit(0))}});
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))for(const signal of ['SIGINT','SIGTERM'])process.once(signal,async()=>{setTimeout(()=>process.exit(0),3000).unref();try{await closeMatrixWorker()}finally{server.close(()=>process.exit(0))}});

@@ -1,6 +1,7 @@
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import path from 'node:path';
 import {randomBytes} from 'node:crypto';
+import {openMatrixStore} from './matrix-store.mjs';
 
 const enc=encodeURIComponent;
 const networkFor=id=>/discord/i.test(id)?'Discord':/slack/i.test(id)?'Slack':/whatsapp/i.test(id)?'WhatsApp':/blueferry/i.test(id)?'iPhone':'Matrix';
@@ -101,7 +102,7 @@ export class MatrixProvider{
    rooms.sort((a,b)=>new Date(b.lastActivity)-new Date(a.lastActivity));return page(rooms,Math.min(200,Number(q.get('limit'))||200),Number(q.get('cursor'))||0);
   }
   if(p==='/v1/messages/search'){
-   const text=(q.get('query')||'').toLowerCase(),items=[...this.timelines.values()].flat().filter(m=>m.text?.toLowerCase().includes(text)&&(!q.has('accountIDs')||q.getAll('accountIDs').includes(m.accountID))).sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp));return {...page(items,Math.min(20,Number(q.get('limit'))||20),Number(q.get('cursor'))||0),scope:'Messages synced or fetched by Chord. Encrypted history search expands as history is loaded.'};
+   const text=(q.get('query')||'').toLowerCase(),items=[...this.timelines.values()].flat().filter(m=>m.text?.toLowerCase().includes(text)&&(!q.has('accountIDs')||q.getAll('accountIDs').includes(m.accountID))).sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp));return {...page(items.map(m=>({...m,conversation:this.chats.get(m.chatID)})),Math.min(20,Number(q.get('limit'))||20),Number(q.get('cursor'))||0),scope:'Messages synced or fetched by Chord. Encrypted history search expands as history is loaded.'};
   }
   if(p==='/v1/assets/upload/base64'&&method==='POST'){
    const bytes=Buffer.from(body.content,'base64');if(bytes.length>20*1024*1024)throw new Error('Attachments must be at most 20 MB');const id=randomBytes(16).toString('hex');this.uploads.set(id,{bytes,name:body.fileName,mime:body.mimeType,at:Date.now()});for(const [k,v] of this.uploads)if(Date.now()-v.at>3600000)this.uploads.delete(k);return {uploadID:id,fileName:body.fileName,mimeType:body.mimeType,fileSize:bytes.length};
@@ -140,11 +141,12 @@ export async function getMatrix({config,dataDir}){
  if(instance)return instance;
  if(boot)return boot;
  boot=(async()=>{
-  const [{createMatrixClient},{createFileMatrixStore}]=await Promise.all([import('./vendor/pickle/packages/pickle/dist/node.js'),import('./vendor/pickle/packages/state-file/dist/index.js')]);
+  const {createMatrixClient}=await import('./vendor/pickle/packages/pickle/dist/node.js');
+  const store=await openMatrixStore(dataDir);
   await mkdir(path.join(dataDir,'matrix-crypto'),{recursive:true,mode:0o700});
-  const client=createMatrixClient({account:config.matrixAccount,store:createFileMatrixStore(path.join(dataDir,'matrix-crypto')),pickleKey:config.pickleKey,recoveryKey:config.recoveryKey,logger:(level,message)=>{if(level==='error')console.error('Matrix:',message)}});
-  const provider=new MatrixProvider(client,config.matrixAccount,{dataDir});await provider.start();instance=provider;return provider;
+  const client=createMatrixClient({account:config.matrixAccount,store,pickleKey:config.pickleKey,recoveryKey:config.recoveryKey,logger:(level,message)=>{if(level==='error')console.error('Matrix:',message)}});
+  const provider=new MatrixProvider(client,config.matrixAccount,{dataDir});await provider.start().catch(async e=>{await client.close().catch(()=>{});store.close();throw e});provider.store=store;instance=provider;return provider;
  })().catch(e=>{boot=null;throw e});return boot;
 }
 export async function matrixRequest(context,endpoint,method,body){return (await getMatrix(context)).request(endpoint,method,body)}
-export async function closeMatrix(){const provider=instance||await boot?.catch(()=>null);if(!provider)return;clearTimeout(provider.flushTimer);if(provider.subscription)await provider.subscription.stop();await provider.client.close();if(provider.persist)await writeFile(path.join(provider.dataDir,'matrix-timeline.json'),JSON.stringify({chats:[...provider.chats],timelines:[...provider.timelines],reactions:[...provider.reactions],mediaFiles:[...provider.mediaFiles]}),{mode:0o600});instance=null;boot=null;}
+export async function closeMatrix(){const provider=instance||await boot?.catch(()=>null);if(!provider)return;clearTimeout(provider.flushTimer);if(provider.subscription)await provider.subscription.stop();await provider.client.close();if(provider.persist)await writeFile(path.join(provider.dataDir,'matrix-timeline.json'),JSON.stringify({chats:[...provider.chats],timelines:[...provider.timelines],reactions:[...provider.reactions],mediaFiles:[...provider.mediaFiles]}),{mode:0o600});provider.store?.close();instance=null;boot=null;}
