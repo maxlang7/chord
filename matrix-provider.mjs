@@ -51,7 +51,7 @@ export class MatrixProvider{
    const locallyRead=old.localReadAt&&Number(latest?.origin_server_ts||Date.parse(old.lastActivity)||0)<=old.localReadAt;
    const rawHighlights=room.unread_notifications?.highlight_count||0;
    const readHighlightBaseline=old.localReadAt?Math.min(old.readHighlightBaseline??rawHighlights,rawHighlights):0;
-   this.chats.set(roomId,{...old,id:roomId,accountID,network:bridge?.protocol?.displayname||networkFor(accountID),title,description:find('m.room.topic')?.topic,type:dm.has(roomId)||room.summary?.['m.joined_member_count']===2?'single':'group',participants:{items:people.length?people:old.participants?.items||[],total:room.summary?.['m.joined_member_count']||people.length,hasMore:(room.summary?.['m.joined_member_count']||people.length)>people.length},lastActivity:new Date(latest?.origin_server_ts||Date.parse(old.lastActivity)||0).toISOString(),rawHighlightCount:rawHighlights,readHighlightBaseline,highlightCount:locallyRead?0:Math.max(0,rawHighlights-readHighlightBaseline),unreadCount:locallyRead?0:room.unread_notifications?.notification_count||0,isMarkedUnread:locallyRead?false:marked??old.isMarkedUnread??false,isArchived:prefs.archived??old.isArchived??false,isMuted:old.isMuted||false,isReadOnly:false,capabilities:{reply:2,reaction:2,edit:2,archive:true,markAsUnread:true},preview:latest?.content?.body?{text:latest.content.body}:old.preview});
+   this.chats.set(roomId,{...old,id:roomId,accountID,network:bridge?.protocol?.displayname||networkFor(accountID),title,description:find('m.room.topic')?.topic,type:dm.has(roomId)||room.summary?.['m.joined_member_count']===2?'single':'group',participants:{items:people.length?people:old.participants?.items||[],total:room.summary?.['m.joined_member_count']||people.length,hasMore:(room.summary?.['m.joined_member_count']||people.length)>people.length},lastActivity:new Date(latest?.origin_server_ts||Date.parse(old.lastActivity)||0).toISOString(),rawHighlightCount:rawHighlights,readHighlightBaseline,highlightCount:locallyRead?0:Math.max(0,rawHighlights-readHighlightBaseline),unreadCount:locallyRead?0:room.unread_notifications?.notification_count||0,isMarkedUnread:old.localMarkedUnread?true:locallyRead?false:marked??old.isMarkedUnread??false,isArchived:prefs.archived??old.isArchived??false,isMuted:old.isMuted||false,isReadOnly:false,capabilities:{reply:2,reaction:2,edit:2,archive:true,markAsUnread:true},preview:latest?.content?.body?{text:latest.content.body}:old.preview});
   }
   this.scheduleSave();
   this.lastRoomRefresh=Date.now();
@@ -171,7 +171,11 @@ export class MatrixProvider{
      if(!unread&&!id){const page=await this.raw('GET',`/_matrix/client/v3/rooms/${enc(roomId)}/messages`,undefined,{dir:'b',limit:'1'});id=page.chunk?.[0]?.event_id}
      await this.client.accountData.setRoom({roomId,eventType:'m.marked_unread',content:{unread}});
      if(!unread&&id)await this.client.messages.markRead({roomId,eventId:id});
-     c.unreadCount=unread?1:0;c.isMarkedUnread=unread;c.localReadAt=unread?0:Date.now();c.readHighlightBaseline=unread?0:c.rawHighlightCount??c.highlightCount??0;if(!unread)c.highlightCount=0;
+     // Room discovery may replace the object while either network request awaits.
+     // Apply the result to the currently stored room, not just the captured object.
+     const current=this.chats.get(roomId)||c;
+     const state={unreadCount:unread?1:0,isMarkedUnread:unread,localMarkedUnread:unread,localReadAt:unread?0:Date.now(),readHighlightBaseline:unread?0:current.rawHighlightCount??current.highlightCount??0,...(!unread?{highlightCount:0}:{})};
+     Object.assign(current,state);Object.assign(c,state);
     }
     else throw Object.assign(new Error('Reminders are not implemented by the independent transport'),{status:501});this.scheduleSave();return c;
    }

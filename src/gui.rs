@@ -421,8 +421,11 @@ impl Gui {
                                             ui.horizontal(|ui| {
                                                 ui.add(
                                                     egui::Label::new(
-                                                        RichText::new(one_line(&chat.title))
-                                                            .strong()
+                                                        (if chat.unread {
+                                                            RichText::new(one_line(&chat.title)).strong()
+                                                        } else {
+                                                            RichText::new(one_line(&chat.title))
+                                                        })
                                                             .color(if active {
                                                                 p.accent
                                                             } else {

@@ -30,3 +30,19 @@ test('old highlighted pings do not turn a later ordinary message into a new ping
  highlights=0;await p.refreshRoomsNow();assert.equal(p.chats.get('!room').readHighlightBaseline,0);
  highlights=1;await p.refreshRoomsNow();assert.equal(p.chats.get('!room').highlightCount,1);
 });
+test('mark read survives a concurrent room refresh replacing the conversation object',async()=>{
+ let release,started;
+ const waiting=new Promise(r=>started=r),gate=new Promise(r=>release=r);
+ const p=new MatrixProvider({accountData:{setRoom:async()=>{started();await gate}},messages:{markRead:async()=>{}}},{userId:'@me'},{save:false});
+ p.chats.set('!room',{id:'!room',unreadCount:5,highlightCount:1});
+ p.raw=async(method,path)=>path.endsWith('/messages')?{chunk:[{event_id:'$head'}]}:{rooms:{join:{'!room':{timeline:{events:[{origin_server_ts:1000}]},unread_notifications:{notification_count:5,highlight_count:1}}}}};
+ const reading=p.request('/v1/chats/!room/read','POST',{});await waiting;
+ await p.refreshRoomsNow();release();await reading;
+ assert.equal(p.chats.get('!room').unreadCount,0);assert.equal(p.chats.get('!room').isMarkedUnread,false);
+ await p.refreshRoomsNow();assert.equal(p.chats.get('!room').unreadCount,0);
+});
+test('explicit unread stays set when a stale sync response says read',async()=>{
+ const p=new MatrixProvider({accountData:{setRoom:async()=>{}}},{userId:'@me'},{save:false});p.chats.set('!room',{id:'!room'});
+ p.raw=async()=>({rooms:{join:{'!room':{timeline:{events:[{origin_server_ts:1000}]},account_data:{events:[{type:'m.marked_unread',content:{unread:false}}]},unread_notifications:{notification_count:0}}}}});
+ await p.request('/v1/chats/!room/unread','POST',{});await p.refreshRoomsNow();assert.equal(p.chats.get('!room').isMarkedUnread,true);
+});

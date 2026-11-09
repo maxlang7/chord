@@ -664,6 +664,9 @@ impl App {
             self.notice = "Showing saved messages. Updating…".into();
         }
         self.scroll = 0;
+        if !self.messages.is_empty() && self.pending_read.is_some() {
+            self.set_read_state(true);
+        }
         self.load_messages(false);
     }
     pub fn set_read_state(&mut self, read: bool) {
@@ -1884,11 +1887,30 @@ mod tests {
         assert!(app.confirm_body.is_none());
     }
     #[test]
+    fn opening_a_cached_thread_marks_read_before_a_refresh_and_survives_switching() {
+        let mut app = App::new(None, true);
+        let (queue, mut reads) = unbounded_channel();
+        app.read_tx = Some(queue);
+        let chat = app.active.clone().unwrap();
+        app.open(chat.clone());
+        assert_eq!(reads.try_recv().unwrap(), (chat.id.clone(), true));
+        assert!(app.pending_read.is_none());
+        let mut next = chat.clone();
+        next.id = "matrix:other".into();
+        app.open(next);
+        assert!(reads.try_recv().is_err());
+        app.open(chat.clone());
+        assert_eq!(reads.try_recv().unwrap(), (chat.id, true));
+        app.set_read_state(false);
+        assert!(!reads.try_recv().unwrap().1);
+    }
+    #[test]
     fn opening_marks_read_once_and_manual_unread_survives_refresh() {
         let mut app = App::new(None, true);
         let (queue, mut reads) = unbounded_channel();
         app.read_tx = Some(queue);
         let chat = app.active.clone().unwrap();
+        app.messages.clear();
         app.open(chat.clone());
         let page = json!({"items":[]});
         let _ = app.tx.send(Response::Messages(
