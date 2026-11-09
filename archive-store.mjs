@@ -33,6 +33,9 @@ export class ArchiveStore {
    CREATE TABLE IF NOT EXISTS resources(namespace TEXT,digest TEXT,event_at INTEGER,captured_at INTEGER,payload BLOB,codec TEXT,raw_bytes INTEGER,PRIMARY KEY(namespace,digest));
    CREATE TABLE IF NOT EXISTS objects(seq INTEGER PRIMARY KEY,namespace TEXT,key TEXT,digest TEXT,event_at INTEGER,captured_at INTEGER,kind TEXT,UNIQUE(namespace,key,digest));
    CREATE INDEX IF NOT EXISTS object_keys ON objects(namespace,key,seq DESC);
+   CREATE TABLE IF NOT EXISTS latest_objects(namespace TEXT,key TEXT,seq INTEGER,PRIMARY KEY(namespace,key));
+   CREATE TABLE IF NOT EXISTS attachment_links(namespace TEXT,conversation_id TEXT,message_id TEXT,attachment_id TEXT,slot INTEGER,object_seq INTEGER,PRIMARY KEY(namespace,conversation_id,message_id,attachment_id,slot));
+   INSERT OR IGNORE INTO latest_objects SELECT namespace,key,MAX(seq) FROM objects GROUP BY namespace,key;
    CREATE TABLE IF NOT EXISTS archive_meta(namespace TEXT,key TEXT,value TEXT,PRIMARY KEY(namespace,key));
    CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(body,title,sender,filenames,content='',contentless_delete=1,tokenize='unicode61 remove_diacritics 2');`);
  }
@@ -41,7 +44,7 @@ export class ArchiveStore {
   if(!c?.id)return;
   const previous=this.getConversation(c.id)||{};
   const value={...previous,...c,source:c.source||previous.source||sourceFor(c.id),title:c.title&&c.title!==c.id?c.title:previous.title||c.id};
-  this.db.prepare('INSERT OR REPLACE INTO conversations VALUES (?,?,?,?,?)').run(this.namespace,c.id,value.source,value.title,JSON.stringify(value));
+  this.db.prepare('INSERT INTO conversations VALUES (?,?,?,?,?) ON CONFLICT(namespace,id) DO UPDATE SET source=excluded.source,title=excluded.title,payload=excluded.payload WHERE conversations.payload<>excluded.payload').run(this.namespace,c.id,value.source,value.title,JSON.stringify(value));
   return value;
  }
  getConversation(id){const r=this.db.prepare('SELECT payload FROM conversations WHERE namespace=? AND id=?').get(this.namespace,id);return r?JSON.parse(r.payload):null}
@@ -57,18 +60,22 @@ export class ArchiveStore {
     const inserted=this.db.prepare("INSERT OR IGNORE INTO records(namespace,conversation_id,message_id,digest,event_at,captured_at,payload,codec,raw_bytes) VALUES (?,?,?,?,?,?,?,'plain',?)").run(this.namespace,conversationID,m.id,hash,stamp,this.now(),bytes,bytes.length);
     const seq=inserted.changes?Number(inserted.lastInsertRowid):this.db.prepare('SELECT seq FROM records WHERE namespace=? AND conversation_id=? AND message_id=? AND digest=?').get(this.namespace,conversationID,m.id,hash).seq;
     if(inserted.changes)this.db.prepare('INSERT INTO message_fts(rowid,body,title,sender,filenames) VALUES (?,?,?,?,?)').run(seq,String(m.text||m.body||'')+' '+String(m.subject||''),c.title,String(m.senderName||m.from||m.senderID||''),(m.attachments||[]).map(a=>a.fileName||a.filename||'').join(' '));
-    this.db.prepare(historical?'INSERT OR IGNORE INTO current_messages VALUES (?,?,?,?,?)':'INSERT OR REPLACE INTO current_messages VALUES (?,?,?,?,?)').run(this.namespace,conversationID,m.id,seq,stamp);
+    this.db.prepare(historical?'INSERT OR IGNORE INTO current_messages VALUES (?,?,?,?,?)':'INSERT INTO current_messages VALUES (?,?,?,?,?) ON CONFLICT(namespace,conversation_id,message_id) DO UPDATE SET seq=excluded.seq,event_at=excluded.event_at WHERE current_messages.seq<>excluded.seq').run(this.namespace,conversationID,m.id,seq,stamp);
    }
    this.db.exec('COMMIT');
   }catch(e){this.db.exec('ROLLBACK');throw e}
  }
  capture(key,value,{kind='read',context={},historical=false,capturedAt=this.now()}={}){
-  let conversationID=context.conversationID||inferredConversation(key),messageID=context.messageID;
-  if(kind==='media'&&!conversationID&&(key.startsWith('media:attachment:')||key.startsWith('media:mail:'))){
-   const suffix=key.slice(key.startsWith('media:attachment:')?17:11);
+  // Re-reading the same snapshot must not re-index every phone message or page.
+  const plainBytes=kind==='media'?null:Buffer.from(JSON.stringify(value)),plainHash=plainBytes?digest(plainBytes):null;
+  if(plainHash){const prior=this.db.prepare('SELECT o.digest,o.event_at FROM latest_objects l JOIN objects o ON o.seq=l.seq WHERE l.namespace=? AND l.key=?').get(this.namespace,key);if(prior?.digest===plainHash)return prior.event_at}
+  let conversationID=context.conversationID||inferredConversation(key),messageID=context.messageID,slot=context.index??0,attachmentID=context.attachmentID;
+  if(kind==='media'&&!conversationID&&(key.startsWith('media:attachment:')||key.startsWith('media:attachment-id:')||key.startsWith('media:mail:'))){
+   const suffix=key.slice(key.startsWith('media:attachment-id:')?20:key.startsWith('media:attachment:')?17:11);
    const c=this.db.prepare("SELECT id FROM conversations WHERE namespace=? AND substr(?,1,length(id)+1)=id||':' ORDER BY length(id) DESC LIMIT 1").get(this.namespace,suffix);
-   if(c){conversationID=c.id;const tail=suffix.slice(c.id.length+1);messageID=tail.slice(0,tail.lastIndexOf(':'))}
+   if(c){conversationID=c.id;const tail=suffix.slice(c.id.length+1);messageID=tail.slice(0,tail.lastIndexOf(':'));if(key.startsWith('media:attachment:'))slot=Number(tail.slice(tail.lastIndexOf(':')+1));else attachmentID=decodeURIComponent(tail.slice(tail.lastIndexOf(':')+1))}
   }
+  if(kind==='media'&&attachmentID&&context.index===undefined){const found=this.message(conversationID,messageID)?.attachments?.findIndex(a=>a.id===attachmentID);if(found>=0)slot=found}
   let stamp=eventTime(context.timestamp,capturedAt);
   if(conversationID&&Array.isArray(value?.items)){
    const dates=value.items.map(m=>eventTime(m.timestamp||m.date,capturedAt));if(dates.length)stamp=Math.max(...dates);
@@ -84,12 +91,16 @@ export class ArchiveStore {
    this.db.prepare("INSERT OR IGNORE INTO resources VALUES (?,?,?,?,?,'raw',?)").run(this.namespace,resource,stamp,capturedAt,raw,raw.length);
    const {data,...metadata}=value;stored={...metadata,_resource:resource};
   }
-  const bytes=Buffer.from(JSON.stringify(stored)),hash=digest(bytes);
+  const bytes=plainBytes||Buffer.from(JSON.stringify(stored)),hash=plainHash||digest(bytes);
   this.db.prepare("INSERT OR IGNORE INTO blobs VALUES (?,?,?,?,?,'plain',?)").run(this.namespace,hash,stamp,capturedAt,bytes,bytes.length);
   this.db.prepare('INSERT OR IGNORE INTO objects(namespace,key,digest,event_at,captured_at,kind) VALUES (?,?,?,?,?,?)').run(this.namespace,key,hash,stamp,capturedAt,kind);
+  const saved=this.db.prepare('SELECT seq FROM objects WHERE namespace=? AND key=? AND digest=?').get(this.namespace,key,hash);
+  this.db.prepare(historical?'INSERT OR IGNORE INTO latest_objects VALUES (?,?,?)':'INSERT OR REPLACE INTO latest_objects VALUES (?,?,?)').run(this.namespace,key,saved.seq);
+  if(kind==='media'&&conversationID&&messageID){attachmentID??=this.message(conversationID,messageID)?.attachments?.[slot]?.id;if(typeof attachmentID==='string'&&Number.isSafeInteger(slot))this.db.prepare(historical?'INSERT OR IGNORE INTO attachment_links VALUES (?,?,?,?,?,?)':'INSERT OR REPLACE INTO attachment_links VALUES (?,?,?,?,?,?)').run(this.namespace,conversationID,messageID,attachmentID,slot,saved.seq)}
   return stamp;
  }
- object(key){const r=this.db.prepare('SELECT b.payload,b.codec FROM objects o JOIN blobs b ON b.namespace=o.namespace AND b.digest=o.digest WHERE o.namespace=? AND o.key=? ORDER BY o.seq DESC LIMIT 1').get(this.namespace,key);if(!r)return undefined;const value=unpackJSON(r.payload,r.codec);if(value?._resource){const b=this.db.prepare('SELECT payload,codec FROM resources WHERE namespace=? AND digest=?').get(this.namespace,value._resource);if(!b)throw new Error('Saved attachment bytes are missing');const {_resource,...metadata}=value;return {...metadata,data:(b.codec==='br11'?brotliDecompressSync(b.payload):Buffer.from(b.payload)).toString('base64url')}}return value}
+ object(key){const r=this.db.prepare('SELECT o.seq FROM latest_objects l JOIN objects o ON o.seq=l.seq WHERE l.namespace=? AND l.key=?').get(this.namespace,key);return r?this.objectVersion(r.seq):undefined}
+ objectVersion(seq){const r=this.db.prepare('SELECT b.payload,b.codec FROM objects o JOIN blobs b ON b.namespace=o.namespace AND b.digest=o.digest WHERE o.namespace=? AND o.seq=?').get(this.namespace,seq);if(!r)return undefined;const value=unpackJSON(r.payload,r.codec);if(value?._resource){const b=this.db.prepare('SELECT payload,codec FROM resources WHERE namespace=? AND digest=?').get(this.namespace,value._resource);if(!b)throw new Error('Saved attachment bytes are missing');const {_resource,...metadata}=value;return {...metadata,data:(b.codec==='br11'?brotliDecompressSync(b.payload):Buffer.from(b.payload)).toString('base64url')}}return value}
  decodeToken(id){
   if(!id.startsWith('archive:')||id.length>12000)throw Object.assign(new Error('Invalid archive conversation'),{status:400});
   let d;try{d=JSON.parse(Buffer.from(id.slice(8),'base64url').toString())}catch{throw Object.assign(new Error('Invalid archive conversation'),{status:400})}
@@ -99,8 +110,12 @@ export class ArchiveStore {
   if(typeof messageID!=='string'||!Number.isSafeInteger(index)||index<0)throw Object.assign(new Error('Invalid saved attachment'),{status:400});
   const r=this.db.prepare('SELECT r.payload,r.codec FROM current_messages c JOIN records r ON r.seq=c.seq WHERE c.namespace=? AND c.conversation_id=? AND c.message_id=?').get(this.namespace,id,messageID);
   const a=r?unpackJSON(r.payload,r.codec).attachments?.[index]:null;
+  const linked=this.db.prepare('SELECT object_seq FROM attachment_links WHERE namespace=? AND conversation_id=? AND message_id=? AND attachment_id=? AND slot=?').get(this.namespace,id,messageID,attachmentID||a?.id||'',index);
+  if(linked)return this.objectVersion(linked.object_seq);
+  if(attachmentID&&!id.startsWith('mail:')){const saved=this.object('media:attachment-id:'+id+':'+messageID+':'+encodeURIComponent(attachmentID));if(saved)return saved}
+  if(attachmentID&&a?.id&&attachmentID!==a.id)return undefined;
   const key=id.startsWith('mail:')?'media:mail:'+id+':'+messageID+':'+(attachmentID||a?.id):'media:attachment:'+id+':'+messageID+':'+index;
-  return this.object(key);
+  return this.object(key)??(id.startsWith('mail:')?this.object('media:mail-message:'+id.split(':')[1]+':'+messageID+':'+(attachmentID||a?.id)):undefined);
  }
  page(id,{before=null,around=null,version=null,limit=50}={}){
   limit=Math.max(1,Math.min(200,Number(limit)||50));

@@ -10,10 +10,11 @@ parentPort.on('message',async ({id,action,args})=>{
    if(action==='refresh'){await p.refreshRooms();data={success:true}}
    else if(action==='crypto')data={crypto:await p.client.crypto.status(),lastError:p.error};
    else if(action==='attachment'){
-    const [roomId,eventId,index]=args;
+    const [roomId,eventId,index,expectedID]=args;
     const message=await p.client.messages.get({roomId,eventId});
     const attachment=p.normalizeMessage(message.message).attachments[index];
     if(!attachment)throw Object.assign(new Error('Attachment not found'),{status:404});
+    if(expectedID&&attachment.id!==expectedID)throw Object.assign(new Error('The attachment changed. Refresh the conversation before downloading it.'),{status:409});
     if(attachment.fileSize>20*1024*1024)throw Object.assign(new Error('Attachment exceeds 20 MB'),{status:413});
     const result=await p.download(attachment.id),bytes=Buffer.from(result.bytes);
     if(bytes.length>20*1024*1024)throw Object.assign(new Error('Attachment exceeds 20 MB'),{status:413});

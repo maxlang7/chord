@@ -116,6 +116,9 @@ on restart and preserve the original history file as a recovery copy. Compressio
 verifies checksums and round trips before replacing stored bytes. Maintenance runs
 every ten minutes while the API is open. `/api/archive/status` and the MCP tool
 `archive_status` report migration, compression, sizes, and counts.
+`nix-shell shell.nix --run 'node scripts/check-archive.mjs'` verifies retained legacy
+observations, every payload checksum, and exact cached attachment bytes without
+printing message contents.
 
 Message and inbox snapshots revalidate within seconds. Explicit Refresh or Ctrl+R
 bypasses freshness timers. Sending, editing, reacting, and read/archive changes

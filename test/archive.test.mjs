@@ -62,6 +62,17 @@ test('archive namespaces isolate search, pages, files and forged result tokens',
   assert.equal(a.decodeToken(forged).kind,undefined);
  }finally{a.close()}
 });
+test('saved versions of an attachment open their own bytes after its message is edited',()=>{
+ const a=new ArchiveStore(':memory:');try{
+  const m=message('m',40,'An attachment');const key='media:attachment:matrix:!r:m:0';
+  for(const id of ['mxc://one','mxc://two']){
+   a.recordMessages('matrix:!r',[{...m,attachments:[{id,fileName:'same-name.txt'}]}]);
+   a.capture(key,{data:Buffer.from(id).toString('base64url')},{kind:'media',context:{conversationID:'matrix:!r',messageID:'m',attachmentID:id,index:0}});
+  }
+  a.compact();
+  for(const id of ['mxc://one','mxc://two'])assert.equal(Buffer.from(a.attachment('matrix:!r','m',0,id).data,'base64url').toString(),id);
+ }finally{a.close()}
+});
 test('archive search paginates and opens an exact older match even when timestamps tie',()=>{
  const a=new ArchiveStore(':memory:',{now:()=>NOW});try{
   a.recordMessages('matrix:!r',Array.from({length:140},(_,i)=>message(String(i),40,'Matching message '+i)));
@@ -85,6 +96,16 @@ test('read cache retains everything, compresses old source dates, and restores o
   const restored=new ReadCache(':memory:',{archive:a});try{assert.deepEqual(restored.peek('messages:matrix:!r:').value,value)}finally{restored.close()}
   assert.ok(c.peek('another'));
  }finally{c.close();a.close()}
+});
+test('identical snapshots avoid repeated indexing, while returning to an earlier value updates the latest saved object',()=>{
+ const a=new ArchiveStore(':memory:');try{
+  let indexed=0;const record=a.recordMessages.bind(a);a.recordMessages=(...args)=>{indexed++;return record(...args)};
+  const key='messages:matrix:!r:',first={items:[message('same',40,'First')]},second={items:[message('same',40,'Second')]};
+  a.capture(key,first);a.capture(key,first);assert.equal(indexed,1);
+  a.capture(key,second);a.capture(key,first);assert.equal(indexed,3);
+  assert.deepEqual(a.object(key),first);assert.equal(a.page('matrix:!r').items[0].text,'First');assert.equal(a.stats().records.versions,2);
+  a.capture(key,second);a.capture(key,first,{historical:true});assert.deepEqual(a.object(key),second);
+ }finally{a.close()}
 });
 test('background import is idempotent, preserves legacy files, and compresses without losing search', {timeout:30000},async t=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'chord-archive-'));t.after(()=>rm(dir,{recursive:true,force:true}));

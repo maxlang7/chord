@@ -148,9 +148,10 @@ export const server=http.createServer(async(req,res)=>{try{
    if(c.kind==='archive'){const result=archive.store.attachment(c.id,b.messageID,b.index??0,b.attachmentID);return result?json(res,result):json(res,{error:'This attachment has not been downloaded locally.'},404)}
    if(c.kind==='blueferry')throw new Error('Bluetooth attachments are unavailable');
    if(typeof b.messageID!=='string'||!b.messageID)throw Object.assign(new Error('messageID is required'),{status:400});
-   if(c.kind==='mail')return json(res,await readCache.get('media:mail:'+id+':'+b.messageID+':'+b.attachmentID,()=>mailAttachment(c.account,b.messageID,b.attachmentID),{maxAge:30*86400000,kind:'media',context:{conversationID:id,messageID:b.messageID}}));
+   if(c.kind==='mail')return json(res,await readCache.get('media:mail:'+id+':'+b.messageID+':'+b.attachmentID,()=>mailAttachment(c.account,b.messageID,b.attachmentID),{maxAge:30*86400000,kind:'media',context:{conversationID:id,messageID:b.messageID,attachmentID:b.attachmentID,index:b.index??0}}));
    const index=b.index??0;if(!Number.isSafeInteger(index)||index<0)throw Object.assign(new Error('Attachment index must be a nonnegative integer'),{status:400});
-   return json(res,await readCache.get('media:attachment:'+id+':'+b.messageID+':'+index,()=>matrixAction({config,dataDir},'attachment',c.remote,b.messageID,index),{maxAge:30*86400000,kind:'media',context:{conversationID:id,messageID:b.messageID}}));
+   const mediaKey=b.attachmentID?'media:attachment-id:'+id+':'+b.messageID+':'+encodeURIComponent(b.attachmentID):'media:attachment:'+id+':'+b.messageID+':'+index;
+   return json(res,await readCache.get(mediaKey,()=>matrixAction({config,dataDir},'attachment',c.remote,b.messageID,index,b.attachmentID),{maxAge:30*86400000,kind:'media',context:{conversationID:id,messageID:b.messageID,attachmentID:b.attachmentID,index}}));
   }
   if(['archive','read','unread'].includes(action)&&req.method==='POST'){
    if(c.kind==='mail')return json(res,await modifyMail(c.account,c.remote,action==='archive'?{archived:b.archived??true}:{read:action==='read'}));
@@ -166,7 +167,18 @@ export const server=http.createServer(async(req,res)=>{try{
  if(p==='/api/blueferry/threads')return json(res,presentThreads(await blueCached('ListThreads','u',[200])));
  if(p==='/api/blueferry/participants'&&req.method==='POST'){const b=await input(req);if(!Array.isArray(b.recipients)||b.recipients.length<2||b.recipients.length>20)throw new Error('Provide the complete verified roster of 2 to 20 recipients');return json(res,await blue('SetGroupParticipants','sas',[b.threadKey,b.recipients.length,...b.recipients]))}
  if(p==='/api/mail/accounts')return json(res,{items:mailAccounts()});
- const mail=p.match(/^\/api\/mail\/(home|cmu)\/(threads|thread|attachment|send)(?:\/([^/]+))?$/);if(mail){const [,a,action,id]=mail;if(action==='threads')return json(res,await listMail(a,{query:url.searchParams.get('query')||undefined,cursor:url.searchParams.get('cursor')}));if(action==='thread')return json(res,await readMail(a,id));if(action==='attachment')return json(res,await mailAttachment(a,url.searchParams.get('messageID'),url.searchParams.get('attachmentID')));if(action==='send'&&req.method==='POST')return json(res,await sendMail(a,await input(req)))}
+ const mail=p.match(/^\/api\/mail\/(home|cmu)\/(threads|thread|attachment|send)(?:\/([^/]+))?$/);if(mail){
+  const [,a,action,id]=mail;
+  if(action==='threads')return json(res,await readCache.get('mail-search:'+a+':'+queryKey(url),()=>listMail(a,{query:url.searchParams.get('query')||undefined,cursor:url.searchParams.get('cursor')}),{maxAge:15000,fresh:url.searchParams.get('fresh')==='true'}));
+  if(action==='thread')return json(res,await cachedMessages('mail:'+a+':'+decodeURIComponent(id),url));
+  if(action==='attachment'){
+   const messageID=url.searchParams.get('messageID'),attachmentID=url.searchParams.get('attachmentID');
+   const c=archive.store.db.prepare('SELECT conversation_id FROM current_messages WHERE namespace=? AND message_id=? AND conversation_id LIKE ? LIMIT 1').get(namespace,messageID,'mail:'+a+':%');
+   const key=c?'media:mail:'+c.conversation_id+':'+messageID+':'+attachmentID:'media:mail-message:'+a+':'+messageID+':'+attachmentID;
+   return json(res,await readCache.get(key,()=>mailAttachment(a,messageID,attachmentID),{maxAge:30*86400000,kind:'media',context:{conversationID:c?.conversation_id,messageID}}));
+  }
+  if(action==='send'&&req.method==='POST')return json(res,await sendMail(a,await input(req)));
+ }
  if(p==='/api/bridges')return json(res,{items:await Promise.all((config.bridges||[]).map(async b=>{try{return {id:b.id,name:b.name,available:true,info:await bridgeInfo(config,b.id)}}catch(e){return {id:b.id,name:b.name,available:false,error:e?.message||String(e)}}}))});
  const bridge=p.match(/^\/api\/bridges\/(whatsapp|slack|discord)\/(start|state|submit|guilds|guild)$/);if(bridge){const [,id,action]=bridge;if(action==='state')return json(res,loginState(id));if(action==='guilds')return json(res,await guilds(config));const b=await input(req);if(action==='start')return json(res,await startBridgeLogin(config,id,b.flow));if(action==='submit')return json(res,await submitBridgeLogin(config,id,b));if(action==='guild')return json(res,await enableGuild(config,b.guildID))}
  if(p==='/api/matrix/crypto')return json(res,await matrixAction({config,dataDir},'crypto'));
