@@ -102,7 +102,7 @@ export class MatrixProvider{
    const id=a.contentUri||a.encryptedFile?.url;if(id&&a.encryptedFile)this.mediaFiles.set(id,a.encryptedFile);
    return {id,type:a.kind==='image'?'img':a.kind,fileName:a.filename,mimeType:a.contentType,fileSize:a.size,...(a.width?{size:{width:a.width,height:a.height}}:{})};
   });
-  return {id:m.eventId,chatID:m.roomId,accountID:room?.accountID||'matrix',senderID:userId,senderName:person?.fullName||userId,timestamp:new Date(m.timestamp||m.raw?.origin_server_ts||0).toISOString(),sortKey:String(m.timestamp||0),text:m.text||'',isMention:!!m.mentions?.userIds?.includes(this.account.userId),isSender:m.sender?.isMe??userId===this.account.userId,linkedMessageID:m.replyTo||m.threadRoot,attachments,isDeleted:false,...(m.edited?{editedTimestamp:new Date(m.timestamp||0).toISOString()}:{}),reactions:this.reactions.get(m.roomId+'|'+m.eventId)||[]};
+  return {id:m.eventId,chatID:m.roomId,accountID:room?.accountID||'matrix',senderID:userId,senderName:person?.fullName||userId,timestamp:new Date(m.timestamp||m.raw?.origin_server_ts||0).toISOString(),sortKey:String(m.timestamp||0),text:m.text||'',isMention:!!m.mentions?.userIds?.includes(this.account.userId),isSender:m.sender?.isMe??userId===this.account.userId,linkedMessageID:m.replyTo||m.threadRoot,threadRootID:m.threadRoot||null,replyCount:Number(m.raw?.unsigned?.['m.relations']?.['m.thread']?.count)||0,attachments,isDeleted:false,...(m.edited?{editedTimestamp:new Date(m.timestamp||0).toISOString()}:{}),reactions:this.reactions.get(m.roomId+'|'+m.eventId)||[]};
  }
  async getChat(roomId){
   let room=this.chats.get(roomId);if(!room){await this.refreshRooms();room=this.chats.get(roomId)}if(!room){const info=await this.client.rooms.get({roomId});room={id:roomId,accountID:'matrix',network:'Matrix',title:info.name||roomId,description:info.topic,type:info.isDM?'single':'group',participants:{items:[],total:info.memberCount||0,hasMore:false},lastActivity:new Date().toISOString(),unreadCount:0,isReadOnly:false,capabilities:{reply:2,reaction:2,edit:2,archive:true,markAsUnread:true}};this.chats.set(roomId,room);}
@@ -121,16 +121,25 @@ export class MatrixProvider{
   })().finally(()=>{this.relationRefresh.delete(roomId)});
   this.relationRefresh.set(roomId,work);return work;
  }
- async listMessages(roomId,cursor,direction){
-  const key=JSON.stringify([roomId,cursor||'',direction||'']);
+ async listMessages(roomId,cursor,direction,threadRoot){
+  const key=JSON.stringify([roomId,cursor||'',direction||'',threadRoot||'']);
   if(this.messageFetches.has(key))return this.messageFetches.get(key);
-  const work=this.fetchMessages(roomId,cursor,direction).finally(()=>{this.messageFetches.delete(key)});
+  const work=this.fetchMessages(roomId,cursor,direction,threadRoot).finally(()=>{this.messageFetches.delete(key)});
   this.messageFetches.set(key,work);return work;
  }
- async fetchMessages(roomId,cursor,direction){
+ async fetchMessages(roomId,cursor,direction,threadRoot){
   if(!this.chats.has(roomId))await this.getChat(roomId);
-  const result=await this.client.messages.list({roomId,limit:50,...(cursor?{cursor}:{}),direction:direction==='after'?'forward':'backward'});
+  const result=await this.client.messages.list({roomId,limit:50,...(threadRoot?{threadRoot}:{}),...(cursor?{cursor}:{}),direction:direction==='after'?'forward':'backward'});
   const items=result.messages.map(m=>this.normalizeMessage(m));
+  const roots=threadRoot?[threadRoot]:[...new Set(items.map(m=>m.threadRootID).filter(Boolean))];
+  for(const root of roots){
+   if(items.some(m=>m.id===root))continue;
+   let parent=this.timelines.get(roomId)?.find(m=>m.id===root)||this.archive?.message('matrix:'+roomId,root);
+   if(!parent){try{const fetched=await this.client.messages.get({roomId,eventId:root});if(fetched.message)parent=this.normalizeMessage(fetched.message)}catch{}}
+   if(parent)items.push({...parent,threadRootID:null});
+  }
+  for(const m of items)if(!m.threadRootID)m.replyCount=Math.max(m.replyCount||0,items.filter(reply=>reply.threadRootID===m.id).length);
+  items.sort((a,b)=>Date.parse(a.timestamp)-Date.parse(b.timestamp));
   // Cached emoji render with the text; recovering older reactions never blocks it.
   this.refreshReactions(roomId,items).catch(e=>{this.error=e.message});
   const prior=this.timelines.get(roomId)||[];
@@ -189,9 +198,18 @@ export class MatrixProvider{
     if(method==='DELETE'){await this.client.messages.redact({roomId,eventId});return {success:true}}
    }
    if(p.endsWith('/messages')){
-    if(method==='GET')return this.listMessages(roomId,q.get('cursor'),q.get('direction'));
+    if(method==='GET')return this.listMessages(roomId,q.get('cursor'),q.get('direction'),q.get('threadRoot'));
     if(method==='POST'){
-     let r;if(body.attachment){const upload=this.uploads.get(body.attachment.uploadID);if(!upload)throw new Error('Attachment upload expired');if(body.replyToMessageID)throw new Error('Replies with attachments are not yet supported by the independent transport. Send the text reply or attachment separately.');r=await this.client.messages.sendMedia({roomId,bytes:upload.bytes,filename:upload.name,contentType:upload.mime,caption:body.text,kind:upload.mime?.startsWith('image/')?'image':upload.mime?.startsWith('video/')?'video':upload.mime?.startsWith('audio/')?'audio':'file'});this.uploads.delete(body.attachment.uploadID)}else{if(!body.text?.trim())throw new Error('Message is empty');r=await this.client.messages.send({roomId,text:body.text,replyTo:body.replyToMessageID})}return {chatID:roomId,pendingMessageID:r.eventId};
+     let threadRoot=body.threadRootID;
+     if(threadRoot&&(typeof threadRoot!=='string'||!threadRoot.startsWith('$')))throw Object.assign(new Error('Invalid thread root'),{status:400});
+     if(!threadRoot&&body.replyToMessageID&&this.chats.get(roomId)?.accountID==='slack'){
+      const target=this.timelines.get(roomId)?.find(m=>m.id===body.replyToMessageID);
+      const fetched=target?null:(await this.client.messages.get({roomId,eventId:body.replyToMessageID})).message;
+      if(!target&&!fetched)throw Object.assign(new Error('Reply target is unavailable'),{status:404});
+      const message=target||this.normalizeMessage(fetched);
+      threadRoot=message.threadRootID||message.id;
+     }
+     let r;if(body.attachment){const upload=this.uploads.get(body.attachment.uploadID);if(!upload)throw new Error('Attachment upload expired');if(body.replyToMessageID)throw new Error('Replies with attachments are not yet supported by the independent transport. Send the text reply or attachment separately.');r=await this.client.messages.sendMedia({roomId,bytes:upload.bytes,filename:upload.name,contentType:upload.mime,caption:body.text,threadRoot,kind:upload.mime?.startsWith('image/')?'image':upload.mime?.startsWith('video/')?'video':upload.mime?.startsWith('audio/')?'audio':'file'});this.uploads.delete(body.attachment.uploadID)}else{if(!body.text?.trim())throw new Error('Message is empty');r=await this.client.messages.send({roomId,text:body.text,replyTo:body.replyToMessageID,threadRoot})}return {chatID:roomId,pendingMessageID:r.eventId};
     }
    }
    if(method==='GET')return this.getChat(roomId);

@@ -651,7 +651,8 @@ impl App {
         self.reply = draft.reply;
         self.edit_message = draft.edit_message;
         self.pending_attachment = draft.attachment;
-        self.pending_read = (c.kind != "archive").then(|| c.id.clone());
+        self.pending_read =
+            (c.kind != "archive" && c.thread_root_id.is_none()).then(|| c.id.clone());
         self.active = Some(c);
         self.focus = Focus::Messages;
         self.messages.clear();
@@ -668,6 +669,41 @@ impl App {
             self.set_read_state(true);
         }
         self.load_messages(false);
+    }
+    pub fn open_thread(&mut self, message: &Message) {
+        let Some(mut chat) = self.active.clone() else {
+            return;
+        };
+        if chat.kind != "chat" {
+            return;
+        }
+        let root = message
+            .thread_root_id
+            .clone()
+            .unwrap_or_else(|| message.id.clone());
+        let parent = chat
+            .parent_conversation_id
+            .clone()
+            .unwrap_or_else(|| chat.id.clone());
+        chat.id = format!(
+            "matrix-thread:{}:{}",
+            urlencoding::encode(&chat.remote_id),
+            urlencoding::encode(&root)
+        );
+        chat.thread_root_id = Some(root);
+        chat.parent_conversation_id = Some(parent);
+        self.open(chat);
+    }
+    pub fn back_to_channel(&mut self) {
+        let Some(mut chat) = self.active.clone() else {
+            return;
+        };
+        let Some(parent) = chat.parent_conversation_id.take() else {
+            return;
+        };
+        chat.id = parent;
+        chat.thread_root_id = None;
+        self.open(chat);
     }
     pub fn set_read_state(&mut self, read: bool) {
         self.pending_read = None;
@@ -1957,6 +1993,34 @@ mod tests {
         ));
         app.poll();
         assert!(reads.try_recv().is_err());
+    }
+    #[test]
+    fn slack_thread_navigation_preserves_separate_drafts_and_parent_identity() {
+        let mut app = App::new(None, true);
+        let mut chat = app.active.clone().unwrap();
+        chat.id = "matrix:!room:chord.local".into();
+        chat.remote_id = "!room:chord.local".into();
+        chat.kind = "chat".into();
+        chat.source = "slack".into();
+        app.open(chat.clone());
+        app.editor.set("channel draft".into());
+        let reply = Message {
+            id: "$reply".into(),
+            thread_root_id: Some("$root".into()),
+            ..Default::default()
+        };
+        app.open_thread(&reply);
+        assert_eq!(
+            app.active.as_ref().unwrap().thread_root_id.as_deref(),
+            Some("$root")
+        );
+        assert!(app.pending_read.is_none());
+        app.editor.set("thread draft".into());
+        app.back_to_channel();
+        assert_eq!(app.active.as_ref().unwrap().id, chat.id);
+        assert_eq!(app.editor.text, "channel draft");
+        app.open_thread(&reply);
+        assert_eq!(app.editor.text, "thread draft");
     }
     #[test]
     fn text_base64() {

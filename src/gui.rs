@@ -624,6 +624,14 @@ impl Gui {
                         });
                     });
                 });
+                if chat.thread_root_id.is_some() {
+                    ui.horizontal(|ui| {
+                        if ui.button("← Back to channel").clicked() {
+                            self.app.back_to_channel();
+                        }
+                        ui.label(RichText::new("Slack thread").strong());
+                    });
+                }
                 ui.add_space(10.);
                 ui.separator();
                 egui::TopBottomPanel::bottom("composer")
@@ -658,6 +666,15 @@ impl Gui {
                         let messages = self.app.messages.clone();
                         let mut previous_day = String::new();
                         for (index, message) in messages.iter().enumerate() {
+                            if chat.source == "slack"
+                                && chat.thread_root_id.is_none()
+                                && message
+                                    .thread_root_id
+                                    .as_ref()
+                                    .is_some_and(|root| messages.iter().any(|m| &m.id == root))
+                            {
+                                continue;
+                            }
                             let day = day_label(&message.timestamp);
                             if day != previous_day {
                                 previous_day = day.clone();
@@ -775,6 +792,19 @@ impl Gui {
                                 },
                             );
                         });
+                        if chat.source == "slack"
+                            && chat.kind == "chat"
+                            && chat.thread_root_id.is_none()
+                            && ui
+                                .button(if m.reply_count > 0 {
+                                    format!("Thread · {}+ replies", m.reply_count)
+                                } else {
+                                    "Open thread".into()
+                                })
+                                .clicked()
+                        {
+                            self.app.open_thread(m);
+                        }
                         if let Some(reply_id) = &m.linked_message_id {
                             let reply = self
                                 .app

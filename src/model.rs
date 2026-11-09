@@ -15,6 +15,9 @@ pub struct Conversation {
     pub server_name: Option<String>,
     pub kind: String,
     pub unread: bool,
+    #[serde(rename = "threadRootID")]
+    pub thread_root_id: Option<String>,
+    pub parent_conversation_id: Option<String>,
     pub can_send: bool,
     pub can_reply: bool,
     pub can_react: bool,
@@ -38,6 +41,9 @@ pub struct Message {
     pub timestamp: String,
     pub is_sender: bool,
     pub linked_message_id: Option<String>,
+    #[serde(rename = "threadRootID")]
+    pub thread_root_id: Option<String>,
+    pub reply_count: usize,
     pub reactions: Vec<Value>,
     pub attachments: Vec<Value>,
     pub to: String,

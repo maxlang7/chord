@@ -81,6 +81,16 @@ attachments have a Save button. Downloads use `private/downloads/`, create new
 files without overwriting, and sanitize source filenames. Media is capped at
 20 MB. Web links open in Brave. Remote email tracking images are not fetched.
 
+Slack messages have an Open thread button, or a reply-count button when replies
+are known. Replies are grouped under their parent rather than mixed into the
+channel timeline. The thread view fetches the parent even when it is outside the
+current channel page and supports older-reply pagination, reactions, and files.
+Back to channel restores the channel's draft and reading position; thread drafts
+are separate. Replying to a Slack message starts or continues its original thread,
+and sending from a thread stays in that thread. Opening a thread alone does not
+mark the entire channel read. Thread reply counts show at least the locally known
+replies and expand as history is fetched.
+
 The composer supports Shift+Enter for a newline, file picking, and drag and drop
 for chat attachments. Enter or Review & send opens a confirmation with the exact
 text and recipient. Failed sends retain the text. Late send and upload results
