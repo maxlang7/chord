@@ -138,3 +138,20 @@ pub fn button(
     });
     response.on_hover_text(label)
 }
+
+/// Paint navigation arrows directly so they do not depend on font fallback.
+pub fn back_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    let response = ui.button(format!("    {label}"));
+    if ui.is_rect_visible(response.rect) {
+        let color = ui.style().interact(&response).text_color();
+        let tip = egui::pos2(response.rect.left() + 8., response.rect.center().y);
+        let stroke = Stroke::new(1.5_f32, color);
+        ui.painter()
+            .line_segment([tip, tip + Vec2::new(9., 0.)], stroke);
+        ui.painter().add(egui::Shape::line(
+            vec![tip + Vec2::new(4., -4.), tip, tip + Vec2::new(4., 4.)],
+            stroke,
+        ));
+    }
+    response
+}

@@ -681,7 +681,7 @@ impl Gui {
                 });
                 if chat.thread_root_id.is_some() {
                     ui.horizontal(|ui| {
-                        if ui.button("← Back to channel").clicked() {
+                        if icons::back_button(ui, "Back to channel").clicked() {
                             self.app.back_to_channel();
                         }
                         ui.label(RichText::new("Slack thread").strong());
