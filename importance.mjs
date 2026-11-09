@@ -4,6 +4,7 @@ export function importance(conversation,{preference={},favorite=false,now=Date.n
  const stamp=Number(activity.lastMessageAt)||Date.parse(c.timestamp)||0,age=(now-stamp)/DAY;
  const reasons=[];let score=0;
  const add=(points,reason)=>{score+=points;reasons.push(reason)};
+ if(c.attention)return {important:c.attention.important,score:c.attention.important?100:0,reasons:[c.attention.reason],rule:'attention'};
  if(preference.priority==='important')return {important:true,score:1000,reasons:['Pinned by you'],rule:'important'};
  if(preference.priority==='quiet')return {important:false,score:-1000,reasons:['Quieted by you'],rule:'quiet'};
  if(c.isMuted)return {important:false,score:-500,reasons:['Muted conversation'],rule:'auto'};

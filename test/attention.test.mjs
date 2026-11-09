@@ -1,0 +1,18 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {applyAttention} from '../attention.mjs';
+import {importance} from '../importance.mjs';
+const rules={visibleServerIDs:['buggy','wrct'],allMessagesChannelIDs:['heads','pushers','info','announcements'],mentionsOnlyServerIDs:['wrct']};
+const c=(serverID,channelID,extra={})=>({source:'discord',serverID,channelID,unread:true,...extra});
+test('only selected Buggy channels and unread WRCT pings count, quiet channels remain accessible',()=>{
+ const items=[...['heads','pushers','info','announcements','social'].map(id=>c('buggy',id)),c('wrct','general'),c('wrct','music',{highlightCount:1}),c('wrct','old',{highlightCount:1,unread:false}),c('other','general'),c(null,'dm'),{source:'slack',unread:true}];
+ const result=applyAttention(items,rules);
+ assert.equal(result.length,6);assert.equal(result.filter(c=>c.unread).length,6);
+ assert.equal(result.some(c=>c.channelID==='social'),false);
+ assert.equal(result.some(c=>c.channelID==='general'),false);
+ assert.equal(result.some(c=>c.channelID==='old'),false);
+ assert.equal(importance(applyAttention(items,rules,{server:'buggy'}).find(c=>c.channelID==='social'),{preference:{priority:'important'}}).important,false);
+ const all=applyAttention(items,rules,{server:'all'});assert.equal(all.length,items.length);assert.equal(all.find(c=>c.serverID==='other').unread,false);
+ assert.equal(applyAttention(items,rules,{query:'something'}).length,items.length);
+});
+test('no configured rules leaves the inbox unchanged',()=>{const items=[c('any','x')];assert.equal(applyAttention(items,null),items)});
