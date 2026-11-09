@@ -5,5 +5,5 @@ unset TMPDIR TEMPDIR TMP TEMP NIX_BUILD_TOP
 cd -- "$chord_root"
 umask 077
 mkdir -p private
-exec /run/current-system/sw/bin/nix-shell "$chord_root/shell.nix" \
+exec /run/current-system/sw/bin/nix-shell "$chord_root/launch.nix" \
   --run 'exec python scripts/launch-client.py' >> private/desktop-client.log 2>&1

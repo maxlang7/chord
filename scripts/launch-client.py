@@ -63,7 +63,7 @@ def start(kind, command):
     with (PRIVATE / f'desktop-{kind}.log').open('ab') as log:
         child = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.DEVNULL,
                                  stdout=log, stderr=log, start_new_session=True)
-    deadline = time.monotonic() + 300
+    deadline = time.monotonic() + 900
     while time.monotonic() < deadline:
         if healthy(kind):
             return
@@ -73,23 +73,58 @@ def start(kind, command):
     raise RuntimeError(f'Chord {kind} is still starting. See private/desktop-{kind}.log.')
 
 
+def start_backend():
+    with (PRIVATE / 'desktop-start.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        start('runtime', ['/run/current-system/sw/bin/nix-shell', str(ROOT / 'runtime.nix'),
+                          '--run', 'exec node scripts/runtime.mjs'])
+        start('api', ['node', str(ROOT / 'server.mjs')])
+
+
+def focus_window():
+    try:
+        clients = json.loads(subprocess.check_output(['hyprctl', 'clients', '-j'], timeout=2))
+        window = next((c for c in clients if c.get('class') == 'dev.chord.Chord'), None)
+        if window:
+            subprocess.run(['hyprctl', 'dispatch', 'focuswindow',
+                            'address:' + window['address']], check=False)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+
+
 def main():
     os.umask(0o077)
     PRIVATE.mkdir(mode=0o700, exist_ok=True)
     os.chdir(ROOT)
-    with (PRIVATE / 'desktop-start.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        start('runtime', ['/run/current-system/sw/bin/nix-shell', str(ROOT / 'runtime.nix'),
-                          '--run', 'exec node scripts/runtime.mjs'])
-        start('api', ['node', str(ROOT / 'server.mjs')])
-        binary = ROOT / 'target/release/chord'
-        if not binary.is_file():
-            binary = ROOT / 'target/debug/chord'
-        if not binary.is_file():
-            print('Building the Chord client…', flush=True)
-            subprocess.run(['cargo', 'build'], cwd=ROOT, check=True)
-    # Close the setup lock before opening the native window, so another window
-    # can reuse this backend without waiting for the first window to close.
+    if '--backend-only' in sys.argv:
+        start_backend()
+        return
+    # Keep one client per desktop session, including during slow cold starts.
+    client_lock = (PRIVATE / 'desktop-window.lock').open('a')
+    try:
+        fcntl.flock(client_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        focus_window()
+        return
+    if not (PRIVATE / 'config.json').is_file():
+        start_backend()
+    if not healthy('runtime') or not healthy('api'):
+        with (PRIVATE / 'desktop-client.log').open('ab') as log:
+            subprocess.Popen([sys.executable, __file__, '--backend-only'], cwd=ROOT,
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                             start_new_session=True)
+    binary = ROOT / 'target/release/chord'
+    if not binary.is_file():
+        binary = ROOT / 'target/debug/chord'
+    if not binary.is_file():
+        print('Building the Chord client…', flush=True)
+        subprocess.run(['/run/current-system/sw/bin/nix-shell', str(ROOT / 'shell.nix'),
+                        '--run', 'cargo build --locked'], cwd=ROOT, check=True)
+    # Existing installations reconnect through the client's normal refresh.
+    os.set_inheritable(client_lock.fileno(), True)
     os.execv(str(binary), [str(binary)])
 
 
