@@ -195,83 +195,96 @@ impl Gui {
                     self.app.load_accounts();
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    let accounts = self.app.connections["items"].as_array();
-                    let online = accounts
-                        .map(|v| v.iter().filter(|a| a["connected"] == true).count())
-                        .unwrap_or(0);
-                    let total = accounts.map(Vec::len).unwrap_or(0);
-                    let label = if self.app.demo {
-                        "Preview".into()
-                    } else if total == 0 {
-                        "Checking accounts".into()
-                    } else {
-                        format!("{online}/{total} connected")
-                    };
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new(label).size(11.).color(p.accent))
-                                .frame(false),
-                        )
-                        .clicked()
-                    {
-                        self.app.load_accounts();
-                    }
-                    let phone = self.app.connections["items"]
-                        .as_array()
-                        .and_then(|items| items.iter().find(|a| a["id"] == "iphone"));
-                    let (label, color) = match phone {
-                        Some(state) if state["connected"] == true => (
-                            if compact {
-                                "BT on"
-                            } else {
-                                "BlueFerry connected"
-                            },
-                            p.accent,
-                        ),
-                        Some(_) => (
-                            if compact {
-                                "BT off"
-                            } else {
-                                "BlueFerry disconnected"
-                            },
-                            p.muted,
-                        ),
-                        None => (
-                            if compact {
-                                "BT…"
-                            } else {
-                                "Checking BlueFerry…"
-                            },
-                            p.muted,
-                        ),
-                    };
-                    let detail = phone
-                        .and_then(|a| a["detail"].as_str())
-                        .unwrap_or("iPhone Bluetooth message connection");
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new(label).size(11.).color(color))
-                                .frame(false),
-                        )
-                        .on_hover_text(detail)
-                        .clicked()
-                    {
-                        self.app.load_accounts();
-                    }
-                    let old = self.theme;
-                    egui::ComboBox::from_id_salt("theme")
-                        .selected_text(if compact { "Theme" } else { self.theme.name() })
-                        .width(if compact { 45. } else { 145. })
-                        .show_ui(ui, |ui| {
-                            for theme in [Theme::Gruvbox, Theme::Dark, Theme::Light] {
-                                ui.selectable_value(&mut self.theme, theme, theme.name());
-                            }
-                        });
-                    if old != self.theme {
-                        self.save_theme(ctx);
-                    }
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), if compact { 78. } else { 70. }),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| self.sidebar_footer(ui, p, compact),
+                    );
                 });
             });
+    }
+    fn sidebar_footer(&mut self, ui: &mut egui::Ui, p: Palette, compact: bool) {
+        ui.separator();
+        ui.add_space(8.);
+        let accounts = self.app.connections["items"].as_array();
+        let online = accounts
+            .map(|items| items.iter().filter(|a| a["connected"] == true).count())
+            .unwrap_or(0);
+        let total = accounts.map(Vec::len).unwrap_or(0);
+        let phone = accounts.and_then(|items| items.iter().find(|a| a["id"] == "iphone"));
+        let connected = phone.map(|a| a["connected"] == true);
+        let state = match connected {
+            Some(true) => "Connected",
+            Some(false) => "Offline",
+            None => "Checking",
+        };
+        let detail = phone
+            .and_then(|a| a["detail"].as_str())
+            .unwrap_or("Checking the iPhone Bluetooth connection")
+            .to_owned();
+        let label = if compact {
+            match connected {
+                Some(true) => "BT on",
+                Some(false) => "BT off",
+                None => "BT…",
+            }
+            .to_owned()
+        } else {
+            format!("iPhone · {state}")
+        };
+        if ui
+            .add(
+                egui::Button::new(RichText::new(label).size(12.).color(
+                    if connected == Some(true) {
+                        p.accent
+                    } else {
+                        p.muted
+                    },
+                ))
+                .frame(false),
+            )
+            .on_hover_text(format!("BlueFerry: {detail}"))
+            .clicked()
+        {
+            self.app.load_accounts();
+        }
+        ui.horizontal(|ui| {
+            if !compact {
+                ui.label(
+                    RichText::new(if self.app.demo {
+                        "Preview".into()
+                    } else {
+                        format!("{online}/{total} accounts online")
+                    })
+                    .size(10.)
+                    .color(p.muted),
+                );
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button("⚙", |ui| {
+                    ui.label(RichText::new("Appearance").small().color(p.muted));
+                    let old = self.theme;
+                    for theme in [Theme::Gruvbox, Theme::Dark, Theme::Light] {
+                        if ui
+                            .selectable_value(&mut self.theme, theme, theme.name())
+                            .clicked()
+                        {
+                            ui.close();
+                        }
+                    }
+                    if old != self.theme {
+                        self.save_theme(ui.ctx());
+                    }
+                    ui.separator();
+                    if ui.button("Manage accounts").clicked() {
+                        self.app.load_accounts();
+                        ui.close();
+                    }
+                })
+                .response
+                .on_hover_text("Settings");
+            });
+        });
     }
     fn run_search(&mut self, ctx: &egui::Context) {
         self.search_page(ctx, false);
@@ -1996,7 +2009,9 @@ pub fn run(app: App) -> anyhow::Result<()> {
             .with_inner_size([1240., 820.])
             .with_min_inner_size([760., 520.]),
         renderer: eframe::Renderer::Glow,
-        vsync: true,
+        // Wayland already schedules presentation. Waiting for a swap interval can
+        // block the event loop when a scratchpad surface is hidden.
+        vsync: std::env::var_os("WAYLAND_DISPLAY").is_none(),
         ..Default::default()
     };
     eframe::run_native(

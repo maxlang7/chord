@@ -65,7 +65,8 @@ excludes database indexes and recovery copies.
   available over Bluetooth; phone attachments are unavailable.
 
 BlueFerry connection state appears as a small connected/disconnected label in the
-sidebar, with more detail under Accounts. Bridge-control and connection-status
+sidebar, with more detail under Accounts. The footer settings button contains
+appearance choices and an account shortcut. Bridge-control and connection-status
 conversations are excluded from the inbox and unread counts; their retained history
 is preserved. Real iPhone conversations remain available even while disconnected.
 

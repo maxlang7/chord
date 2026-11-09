@@ -1025,7 +1025,10 @@ impl App {
         {
             self.load_image();
         }
-        while let Ok(event) = self.rx.try_recv() {
+        for _ in 0..32 {
+            let Ok(event) = self.rx.try_recv() else {
+                break;
+            };
             if matches!(&event, Response::Operation(label, _) if label == "send") {
                 self.send_busy = false;
             }

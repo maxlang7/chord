@@ -77,7 +77,12 @@ impl Media {
      Request::Avatar(id)=>api.get(&format!("/api/contacts/{}/avatar",urlencoding::encode(&id))).await?,
     };
     let encoded=value["data"].as_str().ok_or_else(||anyhow::anyhow!("No image data"))?.to_owned();
-    tokio::task::spawn_blocking(move||images::decode(&encoded)).await?
+    tokio::task::spawn_blocking(move||{
+        let mut decoded=images::decode(&encoded)?;
+        let size=if avatar {128} else {1440};
+        decoded.image=decoded.image.thumbnail(size,size);
+        Ok::<_,anyhow::Error>(decoded)
+    }).await?
    }.await.map_err(|e:anyhow::Error|format!("{e:#}"));
             let _ = tx.send(Event::Media(key, Box::new(result)));
             ctx.request_repaint();
@@ -85,7 +90,11 @@ impl Media {
     }
     pub fn poll(&mut self, ctx: &egui::Context) -> Vec<Event> {
         let mut others = vec![];
-        while let Ok(event) = self.rx.try_recv() {
+        // Keep texture uploads bounded so pointer and compositor events get time.
+        for _ in 0..2 {
+            let Ok(event) = self.rx.try_recv() else {
+                break;
+            };
             match event {
                 Event::Media(key, result) => {
                     self.pending = self.pending.saturating_sub(1);
@@ -94,13 +103,7 @@ impl Media {
                     }
                     match *result {
                         Ok(mut data) => {
-                            let avatar = key.starts_with("avatar:");
-                            let img = if avatar {
-                                data.image.thumbnail(128, 128)
-                            } else {
-                                data.image.thumbnail(1440, 1440)
-                            };
-                            let rgba = img.to_rgba8();
+                            let rgba = data.image.to_rgba8();
                             let texture = ctx.load_texture(
                                 &key,
                                 egui::ColorImage::from_rgba_unmultiplied(
