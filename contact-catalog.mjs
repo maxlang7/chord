@@ -22,7 +22,7 @@ export function readContactCatalog(dataDir, owner='@max:chord.local') {
     const workspaces=network==='slack'?new Map(query('SELECT id,remote_name FROM user_login').map(r=>[r.id.split('-')[0].toLowerCase(),r.remote_name?.split(' - ')[0]])):new Map();
     for(const p of query('SELECT id,name,is_bot,identifiers FROM ghost')){
      let aliases=[];try{aliases=JSON.parse(p.identifiers)||[]}catch{}
-     identities.push({key:`@${network}_${p.id}:chord.local`,source:network,name:p.name,isBot:!!p.is_bot,label:workspaces.get(p.id.split('-')[0].toLowerCase()),aliases:aliases.filter(x=>typeof x==='string')});
+     identities.push({key:`@${network}_${p.id}:chord.local`,source:network,name:p.name,rank:network==='slack'?80:50,isBot:!!p.is_bot,label:workspaces.get(p.id.split('-')[0].toLowerCase()),aliases:aliases.filter(x=>typeof x==='string')});
     }
     for(const r of query("SELECT id,receiver,mxid,name,room_type,other_user_id FROM portal WHERE mxid IS NOT NULL AND mxid!='' AND room_type!='space'"))rooms.set(r.mxid,{network,title:r.name,direct:r.room_type==='dm',groupDM:r.room_type==='group_dm',otherUser:r.other_user_id?`@${network}_${r.other_user_id}:chord.local`:null,portalId:r.id,receiver:r.receiver});
     if(network==='whatsapp'){

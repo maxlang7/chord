@@ -110,6 +110,7 @@ pub enum Response {
     Inbox(u64, Result<Value, String>, bool),
     Messages(String, u64, Result<Value, String>, bool, bool),
     Operation(String, Result<Value, String>),
+    ReadState(String, bool, Result<Value, String>),
     Sent(String, Result<Value, String>),
     Uploaded(String, Result<Value, String>),
     Accounts(Result<Value, String>),
@@ -182,6 +183,8 @@ pub struct App {
     pub confirm_action: String,
     pub status: Value,
     pub connections: Value,
+    pending_read: Option<String>,
+    read_tx: Option<UnboundedSender<(String, bool)>>,
     pub archive_status: Value,
     pub last_connection_refresh: Instant,
     pub focus_view: bool,
@@ -207,6 +210,18 @@ pub const REACTIONS: &[&str] = &[
 impl App {
     pub fn new(api: Option<Api>, demo: bool) -> Self {
         let (tx, rx) = unbounded_channel();
+        let read_tx = api.clone().filter(|_| !demo).map(|api| {
+            let (queue, mut reads) = unbounded_channel::<(String, bool)>();
+            let responses = tx.clone();
+            tokio::spawn(async move {
+                while let Some((id, read)) = reads.recv().await {
+                    let route = Api::conversation(&id, if read { "read" } else { "unread" });
+                    let response = result(api.post(&route, json!({})).await);
+                    let _ = responses.send(Response::ReadState(id, read, response));
+                }
+            });
+            queue
+        });
         let mut app = Self {
             send_busy: false,
             native_ui: false,
@@ -256,6 +271,8 @@ impl App {
             confirm_action: "send".into(),
             status: Value::Null,
             connections: Value::Null,
+            pending_read: None,
+            read_tx,
             archive_status: Value::Null,
             last_connection_refresh: Instant::now(),
             focus_view: true,
@@ -634,6 +651,7 @@ impl App {
         self.reply = draft.reply;
         self.edit_message = draft.edit_message;
         self.pending_attachment = draft.attachment;
+        self.pending_read = (c.kind != "archive").then(|| c.id.clone());
         self.active = Some(c);
         self.focus = Focus::Messages;
         self.messages.clear();
@@ -647,6 +665,15 @@ impl App {
         }
         self.scroll = 0;
         self.load_messages(false);
+    }
+    pub fn set_read_state(&mut self, read: bool) {
+        self.pending_read = None;
+        if let Some(c) = &self.active
+            && c.kind != "archive"
+            && let Some(queue) = &self.read_tx
+        {
+            let _ = queue.send((c.id.clone(), read));
+        }
     }
     pub fn load_messages(&mut self, older: bool) {
         self.request_messages(older, !older && !self.messages.is_empty(), false);
@@ -1134,11 +1161,30 @@ impl App {
                                     c.blue = v["thread"].clone()
                                 }
                                 self.remember_messages();
+                                if self.pending_read.as_ref() == Some(&id) {
+                                    self.set_read_state(true);
+                                }
                             }
                         }
                         Err(e) => self.notice = e,
                     }
                 }
+                Response::ReadState(id, read, response) => match response {
+                    Ok(_) => {
+                        for c in &mut self.conversations {
+                            if c.id == id {
+                                c.unread = !read;
+                            }
+                        }
+                        if let Some(c) = &mut self.active
+                            && c.id == id
+                        {
+                            c.unread = !read;
+                        }
+                        self.refresh(true);
+                    }
+                    Err(error) => self.notice = format!("Could not update read state: {error}"),
+                },
                 Response::Operation(label, r) => match r {
                     Ok(v) => match label.as_str() {
                         "status" => self.status = v,
@@ -1612,9 +1658,7 @@ impl App {
                 }
             }
             KeyCode::Char('m') => {
-                if let Some(c) = self.active.clone() {
-                    self.operation("Marked read", Api::conversation(&c.id, "read"), json!({}))
-                }
+                self.set_read_state(true);
             }
             KeyCode::Char('f') => {
                 if self.active.as_ref().is_some_and(|c| c.kind == "chat") {
@@ -1838,6 +1882,59 @@ mod tests {
         assert_eq!(app.message_selection, selected);
         assert_eq!(app.editor.text, "unsent draft");
         assert!(app.confirm_body.is_none());
+    }
+    #[test]
+    fn opening_marks_read_once_and_manual_unread_survives_refresh() {
+        let mut app = App::new(None, true);
+        let (queue, mut reads) = unbounded_channel();
+        app.read_tx = Some(queue);
+        let chat = app.active.clone().unwrap();
+        app.open(chat.clone());
+        let page = json!({"items":[]});
+        let _ = app.tx.send(Response::Messages(
+            chat.id.clone(),
+            app.message_request_seq,
+            Ok(page.clone()),
+            false,
+            false,
+        ));
+        app.poll();
+        assert_eq!(reads.try_recv().unwrap(), (chat.id.clone(), true));
+        app.set_read_state(false);
+        assert_eq!(reads.try_recv().unwrap(), (chat.id.clone(), false));
+        let _ = app.tx.send(Response::Messages(
+            chat.id.clone(),
+            app.message_request_seq,
+            Ok(page.clone()),
+            false,
+            true,
+        ));
+        app.poll();
+        assert!(reads.try_recv().is_err());
+        app.open(chat.clone());
+        app.set_read_state(false);
+        assert_eq!(reads.try_recv().unwrap(), (chat.id.clone(), false));
+        let _ = app.tx.send(Response::Messages(
+            chat.id.clone(),
+            app.message_request_seq,
+            Ok(page.clone()),
+            false,
+            false,
+        ));
+        app.poll();
+        assert!(reads.try_recv().is_err());
+        let mut archive = chat;
+        archive.kind = "archive".into();
+        app.open(archive.clone());
+        let _ = app.tx.send(Response::Messages(
+            archive.id.clone(),
+            app.message_request_seq,
+            Ok(page),
+            false,
+            false,
+        ));
+        app.poll();
+        assert!(reads.try_recv().is_err());
     }
     #[test]
     fn text_base64() {

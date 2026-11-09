@@ -1,7 +1,7 @@
 import {DatabaseSync} from 'node:sqlite';
 import path from 'node:path';
 const MAX_BYTES=2*1024*1024;
-export async function cacheSlackProfiles(workspace,{dataDir,directory,cache,fetcher=fetch}){
+export async function cacheSlackProfiles(workspace,{dataDir,directory,cache,fetcher=fetch,photos=true}){
  if(!/^[A-Z0-9]+$/.test(workspace||''))throw new Error('Invalid Slack workspace');
  const db=new DatabaseSync(path.join(dataDir,'runtime/slack/bridge.db'),{readOnly:true});let login;
  try{login=db.prepare('SELECT metadata FROM user_login WHERE UPPER(id) LIKE ?').get(workspace+'-%')}finally{db.close()}
@@ -15,9 +15,11 @@ export async function cacheSlackProfiles(workspace,{dataDir,directory,cache,fetc
  const auth=await slack('auth.test');if(auth.team_id!==workspace)throw new Error('Slack workspace identity mismatch');
  const members=new Map();let cursor='';
  do{const page=await slack('users.list',{team_id:workspace,limit:'200',...(cursor?{cursor}:{})});for(const user of page.members||[])members.set(user.id,user);cursor=page.response_metadata?.next_cursor||''}while(cursor);
- const jobs=[...members.values()],result={workspace,profiles:members.size,cached:0,noPhoto:0,failures:[]};
+ const jobs=[...members.values()],result={workspace,profiles:members.size,namesSynced:0,cached:0,noPhoto:0,failures:[]};
  async function worker(){while(jobs.length){const u=jobs.shift(),profile=u.profile||{};const url=profile.image_512||profile.image_192||profile.image_original;
-  const person=directory.book.observe({key:`@slack_${workspace.toLowerCase()}-${u.id.toLowerCase()}:chord.local`,source:'slack',name:profile.real_name||u.real_name||u.name,rank:60,isBot:!!u.is_bot,label:'Slack '+workspace});
+  const preferredName=profile.display_name||profile.real_name||u.real_name||u.name;
+  const person=directory.book.observe({key:`@slack_${workspace.toLowerCase()}-${u.id.toLowerCase()}:chord.local`,source:'slack',name:preferredName,rank:/\s/.test(preferredName||'')?85:70,isBot:!!u.is_bot,label:'Slack '+workspace});
+  result.namesSynced++;if(!photos)continue;
   if(!url){result.noPhoto++;continue}
   try{
    const parsed=new URL(url);if(parsed.protocol!=='https:'||!(parsed.hostname==='secure.gravatar.com'||['slack-edge.com','slack.com','slack-imgs.com'].some(h=>parsed.hostname===h||parsed.hostname.endsWith('.'+h))))throw new Error('Unsupported profile photo host');

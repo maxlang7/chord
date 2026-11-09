@@ -581,19 +581,11 @@ impl Gui {
                                 return;
                             }
                             if ui.button("Mark read").clicked() {
-                                self.app.operation(
-                                    "Marked read",
-                                    Api::conversation(&chat.id, "read"),
-                                    json!({}),
-                                );
+                                self.app.set_read_state(true);
                                 ui.close();
                             }
                             if ui.button("Mark unread").clicked() {
-                                self.app.operation(
-                                    "Marked unread",
-                                    Api::conversation(&chat.id, "unread"),
-                                    json!({}),
-                                );
+                                self.app.set_read_state(false);
                                 ui.close();
                             }
                             if ui.button("Archive conversation").clicked() {

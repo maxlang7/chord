@@ -15,10 +15,10 @@ test('workspace avatars paginate, cache every profile, and never forward credent
    assert.equal(options.headers.Authorization,'Bearer test-secret');
    if(url.endsWith('auth.test'))return Response.json({ok:true,team_id:'TTEST'});
    assert.ok(url.endsWith('users.list'));pages++;
-   return Response.json(pages===1?{ok:true,members:[{id:'U1',profile:{image_512:'https://avatars.slack-edge.com/one'}}],response_metadata:{next_cursor:'next'}}:{ok:true,members:[{id:'U2',profile:{image_512:'https://secure.gravatar.com/two'}},{id:'U3',profile:{}}]});
+   return Response.json(pages===1?{ok:true,members:[{id:'U1',profile:{real_name:'andrewid',display_name:'Alex Chen',image_512:'https://avatars.slack-edge.com/one'}}],response_metadata:{next_cursor:'next'}}:{ok:true,members:[{id:'U2',profile:{image_512:'https://secure.gravatar.com/two'}},{id:'U3',profile:{}}]});
   }
   assert.equal(options.headers,undefined);return new Response(new Uint8Array([1,2,3]),{headers:{'content-type':'image/png'}});
  };
  const r=await cacheSlackProfiles('TTEST',{dataDir:dir,directory:{book},cache:{put:(k,v)=>saved.set(k,v)},fetcher});
- assert.equal(pages,2);assert.equal(r.profiles,3);assert.equal(r.cached,2);assert.equal(r.noPhoto,1);assert.deepEqual(r.failures,[]);assert.equal(saved.size,2);
+ assert.equal(pages,2);assert.equal(r.profiles,3);assert.equal(r.cached,2);assert.equal(r.noPhoto,1);assert.deepEqual(r.failures,[]);assert.equal(saved.size,2);book.observe({key:'@slack_ttest-u1:chord.local',name:'andrewid',rank:60});assert.equal(book.name('@slack_ttest-u1:chord.local'),'Alex Chen');
 });

@@ -88,7 +88,10 @@ cannot modify another conversation's composer. Draft text stays in memory; no
 Gmail drafts are created. Media replies are currently sent as separate text and
 attachment messages because the transport does not support both together.
 
-Reading a conversation does not mark it read. Mark read, unread, archive, local
+Opening a live conversation marks the whole conversation read after its messages
+load successfully. Explicit Mark unread cancels pending automatic reads, and
+background refreshes preserve that choice. Saved archive views never mark read.
+Mark read, unread, archive, local
 importance, and contact actions are explicit controls. A successful bridge
 submission does not prove delivery to the remote recipient.
 
