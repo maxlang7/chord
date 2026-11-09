@@ -8,7 +8,7 @@ pub fn service(p: &egui::Painter, rect: Rect, source: usize, ink: Color32) {
             rect.top() + y * rect.height(),
         )
     };
-    let line = |a: (f32, f32), b: (f32, f32), color, width| {
+    let line = |a: (f32, f32), b: (f32, f32), color: Color32, width: f32| {
         p.line_segment([pt(a.0, a.1), pt(b.0, b.1)], Stroke::new(width, color));
     };
     match source {
@@ -45,7 +45,7 @@ pub fn service(p: &egui::Painter, rect: Rect, source: usize, ink: Color32) {
         }
         3 => {
             let c = Color32::from_rgb(37, 190, 100);
-            p.circle_stroke(pt(0.5, 0.46), rect.width() * 0.38, Stroke::new(2., c));
+            p.circle_stroke(pt(0.5, 0.46), rect.width() * 0.38, Stroke::new(2.0_f32, c));
             line((0.21, 0.72), (0.12, 0.94), c, 2.);
             line((0.12, 0.94), (0.39, 0.82), c, 2.);
             p.add(egui::Shape::line(
@@ -55,14 +55,14 @@ pub fn service(p: &egui::Painter, rect: Rect, source: usize, ink: Color32) {
                     pt(0.5, 0.62),
                     pt(0.67, 0.64),
                 ],
-                Stroke::new(3., c),
+                Stroke::new(3.0_f32, c),
             ));
         }
         4 => {
             p.rect_stroke(
                 Rect::from_two_pos(pt(0.25, 0.03), pt(0.75, 0.97)),
                 4.,
-                Stroke::new(2., ink),
+                Stroke::new(2.0_f32, ink),
                 egui::StrokeKind::Inside,
             );
             line((0.42, 0.13), (0.58, 0.13), ink, 2.);
@@ -77,7 +77,7 @@ pub fn service(p: &egui::Painter, rect: Rect, source: usize, ink: Color32) {
             p.rect_stroke(
                 Rect::from_two_pos(pt(0.07, 0.2), pt(0.93, 0.82)),
                 3.,
-                Stroke::new(2., c),
+                Stroke::new(2.0_f32, c),
                 egui::StrokeKind::Inside,
             );
             line((0.08, 0.23), (0.5, 0.55), c, 2.);
@@ -87,7 +87,7 @@ pub fn service(p: &egui::Painter, rect: Rect, source: usize, ink: Color32) {
             p.rect_stroke(
                 Rect::from_two_pos(pt(0.1, 0.22), pt(0.9, 0.85)),
                 3.,
-                Stroke::new(2., ink),
+                Stroke::new(2.0_f32, ink),
                 egui::StrokeKind::Inside,
             );
             line((0.1, 0.53), (0.35, 0.53), ink, 2.);
