@@ -10,10 +10,10 @@ export class Directory{
   this.refreshing=(async()=>{
    const catalog=readContactCatalog(this.book.dataDir,this.config().matrixAccount?.userId);this.catalog=catalog;
    for(const entry of catalog.identities)this.book.observe(entry);
-   try{for(const p of await this.blue('ListContacts','uu',[2000,0])){
+   this.phoneRefresh=(async()=>{try{for(const p of await this.blue('ListContacts','uu',[2000,0])){
     const aliases=[...(p.phones||[]).map(phoneIdentity),...(p.emails||[]).map(e=>mailbox(e).key)].filter(Boolean);
     if(aliases.length)this.book.observe({key:aliases[0],aliases:aliases.slice(1),name:p.name,source:'iphone',rank:100,personal:true});
-   }}catch(e){catalog.errors.push({source:'phone contacts',error:e.code||e.name})}
+   }}catch(e){catalog.errors.push({source:'phone contacts',error:e.code||e.name})}await this.book.save()})().catch(()=>{});
    for(const room of catalog.rooms.values())if(room.direct&&room.otherUser){const p=this.book.person(room.otherUser),stamp=room.activity?.lastMessageAt;if(p&&stamp&&stamp>(p.lastInteractionAt||0)){p.lastInteractionAt=stamp;this.book.dirty=true}}
    this.refreshed=Date.now();await this.book.save();
   })().finally(()=>{this.refreshing=null});return this.refreshing;
@@ -46,7 +46,7 @@ export class Directory{
   const source=conversation.source||conversation.accountID||'matrix';
   const keyFor=m=>source.startsWith('mail:')?mailbox(m.from||m.senderName).key:source==='iphone'?(phoneIdentity(m.senderID||m.address)||m.senderID):m.senderID;
   const unknown=[...new Set(items.filter(m=>!m.isSender&&!this.book.name(keyFor(m))).map(keyFor).filter(Boolean))];
-  for(let i=0;i<unknown.length;i+=6)await Promise.all(unknown.slice(i,i+6).map(k=>this.profile(k)));
+  if(!this.profileWork)this.profileWork=(async()=>{for(let i=0;i<unknown.length;i+=4)await Promise.all(unknown.slice(i,i+4).map(k=>this.profile(k)));await this.book.save()})().catch(()=>{}).finally(()=>{this.profileWork=null});
   const mentionMap=new Map();
   for(const p of this.book.list())for(const i of p.identities){const match=i.key.match(/^@(slack|discord)_(.+):chord\.local$/);if(match){const remote=match[1]==='slack'?match[2].split('-').at(-1):match[2];const key=remote.toLowerCase();const prev=mentionMap.get(key);mentionMap.set(key,prev&&prev!==p.name?null:p.name)}}
   const result=items.map(m=>{

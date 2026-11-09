@@ -8,7 +8,7 @@ const networkFor=id=>/discord/i.test(id)?'Discord':/slack/i.test(id)?'Slack':/wh
 const page=(items,limit=200,offset=0)=>({items:items.slice(offset,offset+limit),hasMore:items.length>offset+limit,oldestCursor:String(offset+limit),newestCursor:null});
 
 export class MatrixProvider{
- constructor(client,account,{dataDir,save=true}={}){this.client=client;this.account=account;this.dataDir=dataDir;this.persist=save;this.chats=new Map();this.timelines=new Map();this.reactions=new Map();this.uploads=new Map();this.mediaFiles=new Map();this.error=null;this.started=false;this.flushTimer=null;this.relationCache=new Map();}
+ constructor(client,account,{dataDir,save=true}={}){this.client=client;this.account=account;this.dataDir=dataDir;this.persist=save;this.chats=new Map();this.timelines=new Map();this.reactions=new Map();this.uploads=new Map();this.mediaFiles=new Map();this.error=null;this.started=false;this.flushTimer=null;this.relationCache=new Map();this.messageFetches=new Map();this.relationRefresh=new Map();}
  async raw(method,p,body,query){
   // Metadata does not need the crypto worker. Use a bounded HTTP request so a
   // homeserver reconnect cannot leave room discovery waiting on its sync loop.
@@ -69,7 +69,7 @@ export class MatrixProvider{
   }else if(event.kind==='reaction'){
    const key=event.roomId+'|'+event.relatesTo;const current=this.reactions.get(key)||[];const filtered=current.filter(r=>r.id!==event.eventId);if(event.added)filtered.push({id:event.eventId,reactionKey:event.key,participantID:event.sender.userId});this.reactions.set(key,filtered);
   }else if(event.kind==='event'&&event.type==='m.room.redaction'){
-   const redacts=event.raw?.redacts||event.content?.redacts;for(const [key,items] of this.reactions)this.reactions.set(key,items.filter(r=>r.id!==redacts));const m=this.timelines.get(event.roomId)?.find(m=>m.id===redacts);if(m)m.isDeleted=true;
+   const redacts=event.raw?.redacts||event.content?.redacts;for(const [key,items] of this.reactions)this.reactions.set(key,items.filter(r=>r.id!==redacts));const m=this.timelines.get(event.roomId)?.find(m=>m.id===redacts);if(m){m.isDeleted=true;m.text='[Message deleted]';m.attachments=[];m.reactions=[];}
   }else if(event.class==='state'&&room){if(event.type==='m.room.name')room.title=event.content?.name||room.title;if(event.type==='m.room.topic')room.description=event.content?.topic;}
   this.scheduleSave();
  }
@@ -84,18 +84,37 @@ export class MatrixProvider{
   let room=this.chats.get(roomId);if(!room){await this.refreshRooms();room=this.chats.get(roomId)}if(!room){const info=await this.client.rooms.get({roomId});room={id:roomId,accountID:'matrix',network:'Matrix',title:info.name||roomId,description:info.topic,type:info.isDM?'single':'group',participants:{items:[],total:info.memberCount||0,hasMore:false},lastActivity:new Date().toISOString(),unreadCount:0,isReadOnly:false,capabilities:{reply:2,reaction:2,edit:2,archive:true,markAsUnread:true}};this.chats.set(roomId,room);}
   const {members}=await this.client.rooms.listMembers({roomId,membership:'join'});room.participants={items:members.map(m=>({id:m.userId,fullName:m.displayName||m.userId,isSelf:m.userId===this.account.userId})),total:members.length,hasMore:false};return room;
  }
+ async refreshReactions(roomId,items){
+  if(this.relationRefresh.has(roomId))return this.relationRefresh.get(roomId);
+  const due=items.filter(m=>Date.now()-(this.relationCache.get(roomId+'|'+m.id)||0)>300000);
+  if(!due.length)return;
+  const work=(async()=>{
+   for(let offset=0;offset<due.length;offset+=6)await Promise.all(due.slice(offset,offset+6).map(async m=>{
+    const key=roomId+'|'+m.id;
+    try{const data=await this.raw('GET',`/_matrix/client/v1/rooms/${enc(roomId)}/relations/${enc(m.id)}/m.annotation/m.reaction`,undefined,{limit:'100'});this.reactions.set(key,(data.chunk||[]).map(e=>({id:e.event_id,reactionKey:e.content?.['m.relates_to']?.key,participantID:e.sender})).filter(r=>r.reactionKey));this.relationCache.set(key,Date.now())}catch{}
+   }));
+   this.scheduleSave();
+  })().finally(()=>{this.relationRefresh.delete(roomId)});
+  this.relationRefresh.set(roomId,work);return work;
+ }
  async listMessages(roomId,cursor,direction){
+  const key=JSON.stringify([roomId,cursor||'',direction||'']);
+  if(this.messageFetches.has(key))return this.messageFetches.get(key);
+  const work=this.fetchMessages(roomId,cursor,direction).finally(()=>{this.messageFetches.delete(key)});
+  this.messageFetches.set(key,work);return work;
+ }
+ async fetchMessages(roomId,cursor,direction){
   if(!this.chats.has(roomId))await this.getChat(roomId);
   const result=await this.client.messages.list({roomId,limit:50,...(cursor?{cursor}:{}),direction:direction==='after'?'forward':'backward'});
   const items=result.messages.map(m=>this.normalizeMessage(m));
-  // Relation requests also recover emoji reactions from history before this device was connected.
-  for(let offset=0;offset<items.length;offset+=6)await Promise.all(items.slice(offset,offset+6).map(async m=>{
-   const cacheKey=roomId+'|'+m.id;if(Date.now()-(this.relationCache.get(cacheKey)||0)<30000){m.reactions=this.reactions.get(cacheKey)||[];return}
-   try{const data=await this.raw('GET',`/_matrix/client/v1/rooms/${enc(roomId)}/relations/${enc(m.id)}/m.annotation/m.reaction`,undefined,{limit:'100'});const reactions=(data.chunk||[]).map(e=>({id:e.event_id,reactionKey:e.content?.['m.relates_to']?.key,participantID:e.sender})).filter(r=>r.reactionKey);this.reactions.set(cacheKey,reactions);m.reactions=reactions;this.relationCache.set(cacheKey,Date.now())}catch{m.reactions=this.reactions.get(cacheKey)||[]}
-  }));
-  const prior=this.timelines.get(roomId)||[];this.timelines.set(roomId,[...new Map([...prior,...items].map(m=>[m.id,m])).values()].sort((a,b)=>new Date(a.timestamp)-new Date(b.timestamp)));this.scheduleSave();
+  // Cached emoji render with the text; recovering older reactions never blocks it.
+  this.refreshReactions(roomId,items).catch(e=>{this.error=e.message});
+  const prior=this.timelines.get(roomId)||[];
+  this.timelines.set(roomId,[...new Map([...prior,...items].map(m=>[m.id,m])).values()].sort((a,b)=>new Date(a.timestamp)-new Date(b.timestamp)));
+  this.scheduleSave();
   return {items,hasMore:!!result.nextCursor,oldestCursor:result.nextCursor||null,newestCursor:null};
  }
+
  async download(url){if(this.mediaFiles.has(url))return this.client.media.downloadEncrypted({file:this.mediaFiles.get(url)});return this.client.media.download({contentUri:url})}
  async request(endpoint,method='GET',body={}){
   const u=new URL(endpoint,'http://chord.local'),p=u.pathname,q=u.searchParams;

@@ -1,11 +1,13 @@
 import http from 'node:http';
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
-import {randomBytes,timingSafeEqual} from 'node:crypto';
+import {randomBytes,timingSafeEqual,createHash} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {mailAccounts,listMail,readMail,modifyMail,sendMail,mailAttachment,checkMail} from './mail-provider.mjs';
+import {ReadCache} from './read-cache.mjs';
+import {TimelineSeed} from './timeline-seed.mjs';
 import {Directory} from './directory.mjs';
 import {matrixAction,closeMatrixWorker} from './matrix-transport.mjs';
 import {searchMessages} from './search.mjs';
@@ -19,7 +21,40 @@ const run=promisify(execFile),port=Number(process.env.PORT||4789),dataDir=proces
 process.umask(0o077);await mkdir(dataDir,{recursive:true,mode:0o700});
 let config=await readFile(file,'utf8').then(JSON.parse).catch(()=>({apiKey:randomBytes(32).toString('base64url')}));
 if(!config.apiKey)config.apiKey=randomBytes(32).toString('base64url');await writeFile(file,JSON.stringify(config,null,2),{mode:0o600});
-const directory=await Directory.open(dataDir,{blue,config:()=>config});
+const namespace=createHash('sha256').update(JSON.stringify([config.matrixAccount?.homeserver,config.matrixAccount?.userId,config.matrixAccount?.deviceId,(config.mailAccounts||[]).map(a=>[a.id,a.email])])).digest('hex');
+const readCache=new ReadCache(path.join(dataDir,'read-cache.sqlite'),{namespace});
+const timelineSeed=new TimelineSeed(dataDir);
+const directory=await Directory.open(dataDir,{blue:blueCached,config:()=>config});
+function queryKey(url){const q=new URLSearchParams(url.searchParams);q.delete('fresh');q.sort();return q.toString()}
+function blueCached(method,signature='',args=[]){return readCache.get('blue:'+method+':'+JSON.stringify(args),()=>blue(method,signature,args),{maxAge:method==='ListContacts'?3600000:5000})}
+async function seedInbox(url){
+ const source=url.searchParams.get('source')||'all';if(!['all','slack','discord','whatsapp','matrix'].includes(source)||url.searchParams.get('cursor'))return undefined;
+ await directory.refresh();
+ const query=(url.searchParams.get('query')||'').toLowerCase(),unread=url.searchParams.get('unread')==='true',server=url.searchParams.get('server');
+ const rooms=await timelineSeed.chats();if(!rooms.length)return undefined;
+ let items=rooms.filter(c=>!c.isArchived&&(source==='all'||c.accountID===source)&&(!query||c.title?.toLowerCase().includes(query))).map(c=>directory.enrichConversation({...c,id:'matrix:'+c.id,remoteId:c.id,kind:'chat',source:c.accountID,title:c.title,preview:c.preview?.text||'',unread:!!(c.unreadCount||c.isMarkedUnread),timestamp:c.lastActivity,direct:c.type==='single',participants:(c.participants?.items||[]).map(p=>p.id),canReply:!c.isReadOnly,canReact:!c.isReadOnly,canSend:!c.isReadOnly}));
+ if(unread)items=items.filter(c=>c.unread);if(server)items=items.filter(c=>c.source==='discord'&&(server==='all'||(server==='dm'?!c.serverID:c.serverID===server)));
+ return {...rankInbox(items,directory.book,{view:url.searchParams.get('view')||'all'}),errors:[],cursors:{},hasMore:false};
+}
+async function cachedMessages(id,url){
+ const c=parseConversation(id),key='messages:'+id+':'+queryKey(url);
+ return readCache.get(key,async()=>{await directory.refresh();const page=await conversation(id,url);page.items=await directory.enrichMessages(page.items||[],{source:c.kind==='mail'?'mail:'+c.account:c.kind==='blueferry'?'iphone':directory.catalog.rooms.get(c.remote)?.network});return page},{maxAge:c.kind==='mail'?15000:2000,fresh:url.searchParams.get('fresh')==='true',seed:!url.searchParams.has('cursor')?async()=>{const page=await timelineSeed.page(id);if(!page)return;page.items=await directory.enrichMessages(page.items,{source:timelineSeed.rooms.get(c.remote)?.accountID});return page}:undefined});
+}
+const warmQueue=[],warmSeen=new Map();let warmActive=0;
+function warmConversations(items){
+ for(const c of items.filter(c=>c.kind==='chat').slice(0,30)){
+  if(Date.now()-(warmSeen.get(c.id)||0)<300000||warmQueue.length>=60)continue;
+  warmSeen.set(c.id,Date.now());warmQueue.push(c.id);
+ }
+ const pump=()=>{
+  while(warmActive<2&&warmQueue.length){
+   const id=warmQueue.shift();warmActive++;
+   const url=new URL('http://127.0.0.1:'+port+'/messages?fresh=true');
+   cachedMessages(id,url).catch(()=>{}).finally(()=>{warmActive--;pump()});
+  }
+ };
+ pump();
+}
 const avatar=avatarService();
 let connectionCache,connectionWork;
 async function connections(force=false){
@@ -31,6 +66,7 @@ function equal(a,b){const x=Buffer.from(a||''),y=Buffer.from(b||'');return x.len
 async function input(req){let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>32*1024*1024)throw Object.assign(new Error('Request exceeds 32 MB'),{status:413})}try{return raw?JSON.parse(raw):{}}catch{throw Object.assign(new Error('Invalid JSON'),{status:400})}}
 function json(res,value,status=200){res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify(value))}
 export async function blue(method,signature='',args=[]){
+ if(process.env.CHORD_TEST_TRANSPORT_URL)return method==='GetStatus'?{map:false}:[];
  const {stdout}=await run('busctl',['--user','--json=short','call','io.weirdware.BlueFerry','/io/weirdware/BlueFerry','io.weirdware.BlueFerry.Messages1',method,...(signature?[signature,...args.map(String)]:[])],{timeout:30000,maxBuffer:12*1024*1024});
  const data=JSON.parse(stdout).data,value=data?.[0];if(typeof value!=='string')return value;try{return JSON.parse(value)}catch{return value}
 }
@@ -46,15 +82,15 @@ async function inbox(url){
  const source=url.searchParams.get('source')||'all',query=url.searchParams.get('query')||'',cursor=url.searchParams.get('cursor'),unread=url.searchParams.get('unread')==='true';let items=[],errors=[],cursors={};
  const jobs=[];
  if(source==='all'||['slack','discord','whatsapp','matrix'].includes(source))jobs.push((async()=>{try{const q=new URLSearchParams({limit:'200'});if(source!=='all')q.append('accountIDs',source);if(cursor)q.set('cursor',cursor);if(query)q.set('query',query);let d=await matrix('/v1/chats'+(query?'/search':'')+'?'+q);if(!cursor){const all=[...(d.items||[])];while(d.hasMore){q.set('cursor',d.oldestCursor);d=await matrix('/v1/chats'+(query?'/search':'')+'?'+q);all.push(...(d.items||[]))}d={...d,items:all}}items.push(...(d.items||[]).filter(c=>!c.accountID?.includes('blueferry')).map(c=>({...c,id:'matrix:'+c.id,remoteId:c.id,kind:'chat',source:c.accountID,title:c.title,preview:c.preview?.text||c.network||'',unread:!!(c.unreadCount||c.isMarkedUnread),timestamp:c.lastActivity,participants:(Array.isArray(c.participants)?c.participants:(c.participants?.items||[])).map(p=>typeof p==='string'?p:p.id).filter(Boolean),canReply:!c.isReadOnly,canReact:!c.isReadOnly,canSend:!c.isReadOnly})));if(d.hasMore)cursors.matrix=d.oldestCursor}catch(e){errors.push({source:'matrix',error:e?.message||String(e)})}})());
- if(source==='all'||source==='iphone')jobs.push((async()=>{try{const threads=presentThreads(await blue('ListThreads','u',[200]));items.push(...threads.filter(t=>!query||t.name.toLowerCase().includes(query.toLowerCase())).map(t=>({id:'blueferry:'+t.key,remoteId:t.key,kind:'phone',source:'iphone',title:t.name,preview:t.messages?.at(-1)?.body||'',unread:!!t.unread,timestamp:t.last_ts,participants:t.recipients||[],canReply:false,canReact:false,canSend:!!t.reply_ready,blue:t})))}catch(e){errors.push({source:'iphone',error:e?.message||String(e)})}})());
+ if(source==='all'||source==='iphone')jobs.push((async()=>{try{const threads=presentThreads(await blueCached('ListThreads','u',[200]));items.push(...threads.filter(t=>!query||t.name.toLowerCase().includes(query.toLowerCase())).map(t=>({id:'blueferry:'+t.key,remoteId:t.key,kind:'phone',source:'iphone',title:t.name,preview:t.messages?.at(-1)?.body||'',unread:!!t.unread,timestamp:t.last_ts,participants:t.recipients||[],canReply:false,canReact:false,canSend:!!t.reply_ready,blue:t})))}catch(e){errors.push({source:'iphone',error:e?.message||String(e)})}})());
  for(const a of mailAccounts())if(source==='all'||source==='mail:'+a.id)jobs.push((async()=>{try{const d=await listMail(a.id,{query:query||'in:inbox',cursor:source==='all'?undefined:cursor,limit:source==='all'?12:35});items.push(...d.items.map(m=>({...m,id:'mail:'+a.id+':'+m.id,remoteId:m.id,kind:'email',source:'mail:'+a.id,title:m.subject,preview:m.from+' · '+m.snippet,timestamp:m.date,canReply:true,canReact:false,canSend:true})));if(d.hasMore)cursors['mail:'+a.id]=d.oldestCursor}catch(e){errors.push({source:'mail:'+a.id,error:e?.message||String(e)})}})());
  await Promise.all(jobs);items=items.filter(c=>(!unread||c.unread)&&!c.isArchived);const server=url.searchParams.get('server');if(server&&!/^(all|dm|[0-9]+)$/.test(server))throw Object.assign(new Error('Invalid Discord server'),{status:400});let enriched=items.map(c=>directory.enrichConversation(c));if(server)enriched=enriched.filter(c=>c.source==='discord'&&(server==='all'||(server==='dm'?!c.serverID:c.serverID===server)));const ranked=rankInbox(enriched,directory.book,{view});await directory.book.save();return {...ranked,errors,cursors,hasMore:Object.keys(cursors).length>0};
 }
 function parseConversation(id){if(id.startsWith('matrix:'))return {kind:'matrix',remote:id.slice(7)};if(id.startsWith('blueferry:'))return {kind:'blueferry',remote:id.slice(10)};const m=id.match(/^mail:(home|cmu):(.+)$/);if(m)return {kind:'mail',account:m[1],remote:m[2]};throw Object.assign(new Error('Unknown conversation ID'),{status:400})}
 async function conversation(id,url){const c=parseConversation(id);
- if(c.kind==='matrix')return matrix('/v1/chats/'+encodeURIComponent(c.remote)+'/messages'+url.search);
+ if(c.kind==='matrix')return matrix('/v1/chats/'+encodeURIComponent(c.remote)+'/messages'+(url.searchParams.has('cursor')?'?cursor='+encodeURIComponent(url.searchParams.get('cursor')):''));
  if(c.kind==='mail'){const d=await readMail(c.account,c.remote);return {...d,items:d.items.map(m=>({...m,chatID:id,senderName:m.from,timestamp:m.date,linkedMessageID:null,reactions:[]}))}}
- const t=presentThreads(await blue('ListThreads','u',[500])).find(t=>t.key===c.remote);if(!t)throw Object.assign(new Error('Phone conversation not found'),{status:404});return {items:(t.messages||[]).map((m,i)=>({...m,id:m.handle||String(i),text:m.body,timestamp:m.timestamp,isSender:m.outgoing,senderID:m.address,senderName:m.sender||m.address||t.name,reactions:[],attachments:[]})),thread:t,hasMore:false};
+ const t=presentThreads(await blueCached('ListThreads','u',[500])).find(t=>t.key===c.remote);if(!t)throw Object.assign(new Error('Phone conversation not found'),{status:404});return {items:(t.messages||[]).map((m,i)=>({...m,id:m.handle||String(i),text:m.body,timestamp:m.timestamp,isSender:m.outgoing,senderID:m.address,senderName:m.sender||m.address||t.name,reactions:[],attachments:[]})),thread:t,hasMore:false};
 }
 async function send(id,body){const c=parseConversation(id);if(c.kind==='matrix')return matrix('/v1/chats/'+encodeURIComponent(c.remote)+'/messages','POST',body);if(c.kind==='mail')return sendMail(c.account,{...body,threadId:c.remote});return {transfer:await blue('SendToThreadChecked','ssbs',[c.remote,body.text,!!body.confirmGroup,body.expectedGroupToken||''])}}
 
@@ -64,31 +100,33 @@ export const server=http.createServer(async(req,res)=>{try{
  config=await readFile(file,'utf8').then(JSON.parse);
  if(!equal(req.headers.authorization?.replace(/^Bearer /,''),config.apiKey))return json(res,{error:'Authentication required'},401);
  const url=new URL(req.url,'http://127.0.0.1:'+port),p=url.pathname;
+ if(req.headers['x-chord-refresh']==='true')url.searchParams.set('fresh','true');
+ if(req.method!=='GET'&&!p.endsWith('/attachment')&&!p.includes('/assets/'))res.once('finish',()=>{if(res.statusCode<400){readCache.invalidate('messages:');readCache.invalidate('inbox:');readCache.invalidate('contacts:')}});
  if(p==='/api/status')return json(res,{version:'0.3.0',independent:true,userID:config.matrixAccount?.userId||null,matrixConfigured:!!config.matrixAccount,homeserver:config.matrixAccount?.homeserver||null,transport:'Local Matrix bridges + direct BlueFerry + Gmail',networks:(config.bridges||[]).map(({id,name})=>({id,name})),mail:mailAccounts()});
  if(p==='/api/search'&&req.method==='GET'){await directory.refresh();return json(res,await searchMessages(url.searchParams.get('query')||'',{matrix,blue,mailAccounts,listMail,directory}))}
  if(p==='/api/connections'&&req.method==='GET')return json(res,await connections(url.searchParams.get('refresh')==='true'));
- if(p==='/api/inbox'&&req.method==='GET')return json(res,await inbox(url));
+ if(p==='/api/inbox'&&req.method==='GET')return json(res,await readCache.get('inbox:'+queryKey(url),async()=>{const page=await inbox(url);setImmediate(()=>warmConversations(page.items));return page},{maxAge:5000,fresh:url.searchParams.get('fresh')==='true',seed:()=>seedInbox(url)}));
  if(p==='/api/discord/servers'&&req.method==='GET'){await directory.refresh();const rooms=[...directory.catalog.rooms.values()].filter(r=>r.network==='discord');return json(res,{items:directory.catalog.servers.map(g=>({...g,channelCount:rooms.filter(r=>r.serverID===g.id).length})).sort((a,b)=>a.name.localeCompare(b.name)),directMessageCount:rooms.filter(r=>!r.serverID).length})}
- if(p==='/api/contacts'&&req.method==='GET'){await directory.refresh();return json(res,{items:directory.book.list(url.searchParams.get('query')||''),errors:directory.catalog.errors})}
+ if(p==='/api/contacts'&&req.method==='GET'){directory.refresh().catch(()=>{});return json(res,{items:directory.book.list(url.searchParams.get('query')||''),errors:directory.catalog.errors})}
  if(p==='/api/contacts/refresh'&&req.method==='POST'){await directory.refresh(true);return json(res,{count:directory.book.list().length,errors:directory.catalog.errors})}
  if(p==='/api/contacts/merge'&&req.method==='POST'){const b=await input(req);if(b.confirm!==true)throw new Error('Review the two contacts and confirm linking');return json(res,await directory.book.merge(b.sourceID,b.targetID))}
  if(p==='/api/contacts/undo-merge'&&req.method==='POST')return json(res,await directory.book.undoMerge());
  const photo=p.match(/^\/api\/contacts\/(person_[a-f0-9]+)\/avatar$/);
- if(photo&&req.method==='GET'){await directory.refresh();const contact=directory.book.data.people[photo[1]];if(!contact||contact.redirect)return json(res,{error:'Contact not found'},404);const result=await avatar(contact,config.matrixAccount);return result?json(res,result):json(res,{error:'No profile photo available'},404)}
+ if(photo&&req.method==='GET'){await directory.refresh();const contact=directory.book.data.people[photo[1]];if(!contact||contact.redirect)return json(res,{error:'Contact not found'},404);const result=await readCache.get('media:avatar:'+photo[1],()=>avatar(contact,config.matrixAccount),{maxAge:86400000,kind:'media'});return result?json(res,result):json(res,{error:'No profile photo available'},404)}
  const person=p.match(/^\/api\/contacts\/(person_[a-f0-9]+)$/);if(person&&req.method==='GET'){await directory.refresh();const contact=directory.book.data.people[person[1]];if(!contact||contact.redirect)return json(res,{error:'Contact not found'},404);return json(res,{...directory.book.present(contact),conversations:[...directory.conversations.values()].filter(c=>c.contactIDs.includes(contact.id)).sort((a,b)=>Date.parse(b.timestamp)-Date.parse(a.timestamp))})}if(person&&req.method==='POST')return json(res,await directory.book.update(person[1],await input(req)));
  if(p==='/api/preferences/conversation'&&req.method==='POST'){const b=await input(req);parseConversation(b.conversationID);return json(res,await directory.book.setPreference(b.conversationID,b))}
 
  if(p.startsWith('/api/conversations/')){
   const match=p.match(/^\/api\/conversations\/([^/]+)\/(messages|details|attachment|send|archive|read|unread|reaction|edit)$/);if(!match)return json(res,{error:'Unknown conversation action'},404);const id=decodeURIComponent(match[1]),action=match[2],c=parseConversation(id);
   if(action==='details'&&req.method==='GET'){if(c.kind==='matrix')return json(res,await matrix('/v1/chats/'+encodeURIComponent(c.remote)));if(c.kind==='blueferry')return json(res,{...(await conversation(id,url)).thread,status:await blue('GetStatus')});return json(res,{account:mailAccounts().find(a=>a.id===c.account),threadID:c.remote})}
-  if(action==='messages'&&req.method==='GET'){await directory.refresh();const page=await conversation(id,url);page.items=await directory.enrichMessages(page.items||[],{source:c.kind==='mail'?'mail:'+c.account:c.kind==='blueferry'?'iphone':directory.catalog.rooms.get(c.remote)?.network});return json(res,page)}
+  if(action==='messages'&&req.method==='GET')return json(res,await cachedMessages(id,url));
   const b=await input(req);if(action==='send'&&req.method==='POST')return json(res,await send(id,b));
   if(action==='attachment'&&req.method==='POST'){
    if(c.kind==='blueferry')throw new Error('Bluetooth attachments are unavailable');
    if(typeof b.messageID!=='string'||!b.messageID)throw Object.assign(new Error('messageID is required'),{status:400});
-   if(c.kind==='mail')return json(res,await mailAttachment(c.account,b.messageID,b.attachmentID));
+   if(c.kind==='mail')return json(res,await readCache.get('media:mail:'+id+':'+b.messageID+':'+b.attachmentID,()=>mailAttachment(c.account,b.messageID,b.attachmentID),{maxAge:30*86400000,kind:'media'}));
    const index=b.index??0;if(!Number.isSafeInteger(index)||index<0)throw Object.assign(new Error('Attachment index must be a nonnegative integer'),{status:400});
-   return json(res,await matrixAction({config,dataDir},'attachment',c.remote,b.messageID,index));
+   return json(res,await readCache.get('media:attachment:'+id+':'+b.messageID+':'+index,()=>matrixAction({config,dataDir},'attachment',c.remote,b.messageID,index),{maxAge:30*86400000,kind:'media'}));
   }
   if(['archive','read','unread'].includes(action)&&req.method==='POST'){
    if(c.kind==='mail')return json(res,await modifyMail(c.account,c.remote,action==='archive'?{archived:b.archived??true}:{read:action==='read'}));
@@ -101,7 +139,7 @@ export const server=http.createServer(async(req,res)=>{try{
  }
  if(p.startsWith('/api/v1/'))return json(res,await matrix(p.slice(4)+url.search,req.method,req.method==='GET'?undefined:await input(req)));
  if(p==='/api/blueferry/status')return json(res,await blue('GetStatus'));
- if(p==='/api/blueferry/threads')return json(res,presentThreads(await blue('ListThreads','u',[200])));
+ if(p==='/api/blueferry/threads')return json(res,presentThreads(await blueCached('ListThreads','u',[200])));
  if(p==='/api/blueferry/participants'&&req.method==='POST'){const b=await input(req);if(!Array.isArray(b.recipients)||b.recipients.length<2||b.recipients.length>20)throw new Error('Provide the complete verified roster of 2 to 20 recipients');return json(res,await blue('SetGroupParticipants','sas',[b.threadKey,b.recipients.length,...b.recipients]))}
  if(p==='/api/mail/accounts')return json(res,{items:mailAccounts()});
  const mail=p.match(/^\/api\/mail\/(home|cmu)\/(threads|thread|attachment|send)(?:\/([^/]+))?$/);if(mail){const [,a,action,id]=mail;if(action==='threads')return json(res,await listMail(a,{query:url.searchParams.get('query')||undefined,cursor:url.searchParams.get('cursor')}));if(action==='thread')return json(res,await readMail(a,id));if(action==='attachment')return json(res,await mailAttachment(a,url.searchParams.get('messageID'),url.searchParams.get('attachmentID')));if(action==='send'&&req.method==='POST')return json(res,await sendMail(a,await input(req)))}
