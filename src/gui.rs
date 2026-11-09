@@ -5,7 +5,7 @@ use crate::{
     api::Api,
     app::{App, Mode, REACTIONS},
     images::Target,
-    model::{Conversation, Message, one_line, source_label, time_label},
+    model::{Conversation, Message, day_label, one_line, source_label, time_label},
 };
 use eframe::egui::{self, Color32, RichText, Vec2};
 use media::{Entry, Event, Media, Request};
@@ -649,9 +649,7 @@ impl Gui {
                         let messages = self.app.messages.clone();
                         let mut previous_day = String::new();
                         for (index, message) in messages.iter().enumerate() {
-                            let day = chrono::DateTime::parse_from_rfc3339(&message.timestamp)
-                                .map(|d| d.format("%A, %B %-d").to_string())
-                                .unwrap_or_default();
+                            let day = day_label(&message.timestamp);
                             if day != previous_day {
                                 previous_day = day.clone();
                                 ui.add_space(14.);

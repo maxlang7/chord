@@ -1,6 +1,6 @@
 use crate::{
     app::{App, Focus, Mode, REACTIONS},
-    model::{SOURCES, clean, one_line, source_label, time_label},
+    model::{SOURCES, clean, day_label, one_line, source_label, time_label},
 };
 use qrcode::QrCode;
 use ratatui::{
@@ -515,10 +515,7 @@ fn render_thread(frame: &mut Frame, app: &App, area: Rect, t: Theme) {
     let mut day = String::new();
     let width = message_area.width.saturating_sub(5) as usize;
     for (i, m) in app.messages.iter().enumerate() {
-        let stamp = chrono::DateTime::parse_from_rfc3339(&m.timestamp).ok();
-        let date = stamp
-            .map(|d| d.format("%A, %B %d").to_string())
-            .unwrap_or_default();
+        let date = day_label(&m.timestamp);
         if date != day {
             day = date.clone();
             lines.push(Line::from(Span::styled(

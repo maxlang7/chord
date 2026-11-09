@@ -87,6 +87,19 @@ pub fn source_label(source: &str) -> &str {
     }
 }
 
+pub fn day_label(stamp: &str) -> String {
+    day_label_in(stamp, &chrono::Local)
+}
+
+fn day_label_in<Tz: chrono::TimeZone>(stamp: &str, timezone: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    chrono::DateTime::parse_from_rfc3339(stamp)
+        .map(|d| d.with_timezone(timezone).format("%A, %B %-d").to_string())
+        .unwrap_or_default()
+}
+
 pub fn time_label(stamp: &str) -> String {
     let Ok(d) = chrono::DateTime::parse_from_rfc3339(stamp) else {
         return String::new();
@@ -162,4 +175,43 @@ pub fn demo() -> (Vec<Conversation>, Vec<Message>) {
         Message{id:"demo-3".into(),sender_name:"Victoria".into(),timestamp:now,text:"Sounds good. I'll update the timing.\n\nThanks for looking at it!".into(),linked_message_id:Some("demo-2".into()),..Default::default()},
     ];
     (chats, messages)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn message_day_uses_the_local_calendar_date_across_utc_midnight() {
+        let eastern_winter = chrono::FixedOffset::west_opt(5 * 3600).unwrap();
+        for (stamp, expected) in [
+            ("2026-11-09T01:19:29Z", "Sunday, November 8"),
+            ("2026-11-08T20:19:29-05:00", "Sunday, November 8"),
+            ("2026-11-09T04:59:59Z", "Sunday, November 8"),
+            ("2026-11-09T05:00:00Z", "Monday, November 9"),
+            ("2027-01-01T01:00:00Z", "Thursday, December 31"),
+        ] {
+            assert_eq!(day_label_in(stamp, &eastern_winter), expected);
+        }
+        let eastern_summer = chrono::FixedOffset::west_opt(4 * 3600).unwrap();
+        assert_eq!(
+            day_label_in("2026-07-10T03:59:59Z", &eastern_summer),
+            "Thursday, July 9"
+        );
+        assert_eq!(
+            day_label_in("2026-07-10T04:00:00Z", &eastern_summer),
+            "Friday, July 10"
+        );
+        let east_of_utc = chrono::FixedOffset::east_opt(9 * 3600).unwrap();
+        assert_eq!(
+            day_label_in("2026-11-08T23:00:00Z", &east_of_utc),
+            "Monday, November 9"
+        );
+    }
+
+    #[test]
+    fn invalid_message_dates_have_no_day_heading() {
+        assert_eq!(day_label_in("not a timestamp", &chrono::Utc), "");
+        assert_eq!(day_label_in("", &chrono::Utc), "");
+    }
 }
