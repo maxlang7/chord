@@ -48,7 +48,8 @@ export class MatrixProvider{
    const people=state.filter(e=>e.type==='m.room.member'&&e.content?.membership==='join').map(e=>({id:e.state_key,fullName:e.content.displayname||e.state_key,isSelf:e.state_key===this.account.userId}));
    const old=this.chats.get(roomId)||{};const prefs=room.account_data?.events?.find(e=>e.type==='org.chord.chat')?.content||{};const marked=room.account_data?.events?.find(e=>e.type==='m.marked_unread')?.content?.unread;
    const latest=room.timeline?.events?.at(-1);const title=find('m.room.name')?.name||bridge?.channel?.displayname||people.filter(p=>!p.isSelf).map(p=>p.fullName).slice(0,3).join(', ')||roomId;
-   this.chats.set(roomId,{...old,id:roomId,accountID,network:bridge?.protocol?.displayname||networkFor(accountID),title,description:find('m.room.topic')?.topic,type:dm.has(roomId)||room.summary?.['m.joined_member_count']===2?'single':'group',participants:{items:people.length?people:old.participants?.items||[],total:room.summary?.['m.joined_member_count']||people.length,hasMore:(room.summary?.['m.joined_member_count']||people.length)>people.length},lastActivity:new Date(latest?.origin_server_ts||Date.parse(old.lastActivity)||0).toISOString(),highlightCount:room.unread_notifications?.highlight_count||0,unreadCount:room.unread_notifications?.notification_count||0,isMarkedUnread:marked??old.isMarkedUnread??false,isArchived:prefs.archived??old.isArchived??false,isMuted:old.isMuted||false,isReadOnly:false,capabilities:{reply:2,reaction:2,edit:2,archive:true,markAsUnread:true},preview:latest?.content?.body?{text:latest.content.body}:old.preview});
+   const locallyRead=old.localReadAt&&Number(latest?.origin_server_ts||Date.parse(old.lastActivity)||0)<=old.localReadAt;
+   this.chats.set(roomId,{...old,id:roomId,accountID,network:bridge?.protocol?.displayname||networkFor(accountID),title,description:find('m.room.topic')?.topic,type:dm.has(roomId)||room.summary?.['m.joined_member_count']===2?'single':'group',participants:{items:people.length?people:old.participants?.items||[],total:room.summary?.['m.joined_member_count']||people.length,hasMore:(room.summary?.['m.joined_member_count']||people.length)>people.length},lastActivity:new Date(latest?.origin_server_ts||Date.parse(old.lastActivity)||0).toISOString(),highlightCount:locallyRead?0:room.unread_notifications?.highlight_count||0,unreadCount:locallyRead?0:room.unread_notifications?.notification_count||0,isMarkedUnread:locallyRead?false:marked??old.isMarkedUnread??false,isArchived:prefs.archived??old.isArchived??false,isMuted:old.isMuted||false,isReadOnly:false,capabilities:{reply:2,reaction:2,edit:2,archive:true,markAsUnread:true},preview:latest?.content?.body?{text:latest.content.body}:old.preview});
   }
   this.scheduleSave();
   this.lastRoomRefresh=Date.now();
@@ -161,7 +162,15 @@ export class MatrixProvider{
    const roomId=decodeURIComponent(match[1]),eventId=match[2]&&decodeURIComponent(match[2]),key=match[3]&&decodeURIComponent(match[3]),action=match[4];
    if(action){const c=this.chats.get(roomId)||await this.getChat(roomId);
     if(action==='archive'){c.isArchived=body.archived??true;await this.client.accountData.setRoom({roomId,eventType:'org.chord.chat',content:{archived:c.isArchived}})}
-    else if(action==='unread'||action==='read'){const unread=action==='unread';await this.client.accountData.setRoom({roomId,eventType:'m.marked_unread',content:{unread}});if(!unread){const id=body.messageID||this.timelines.get(roomId)?.at(-1)?.id;if(id)await this.client.messages.markRead({roomId,eventId:id})}c.unreadCount=unread?1:0;c.isMarkedUnread=unread;}
+    else if(action==='unread'||action==='read'){
+     const unread=action==='unread';let id=body.messageID;
+     // Unopened rooms may have no local timeline, or only older fetched history.
+     // Advance the receipt to the current room head rather than clearing only a badge.
+     if(!unread&&!id){const page=await this.raw('GET',`/_matrix/client/v3/rooms/${enc(roomId)}/messages`,undefined,{dir:'b',limit:'1'});id=page.chunk?.[0]?.event_id}
+     await this.client.accountData.setRoom({roomId,eventType:'m.marked_unread',content:{unread}});
+     if(!unread&&id)await this.client.messages.markRead({roomId,eventId:id});
+     c.unreadCount=unread?1:0;c.isMarkedUnread=unread;c.localReadAt=unread?0:Date.now();if(!unread)c.highlightCount=0;
+    }
     else throw Object.assign(new Error('Reminders are not implemented by the independent transport'),{status:501});this.scheduleSave();return c;
    }
    if(p.includes('/reactions')){

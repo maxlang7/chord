@@ -6,8 +6,10 @@ import {convert} from 'html-to-text';
 const configuration=await readFile(process.env.CHORD_CONFIG||path.join(import.meta.dirname,'private/config.json'),'utf8').then(JSON.parse).catch(()=>({}));
 const definitions=(configuration.mailAccounts||[]).filter(a=>['home','cmu'].includes(a.id)&&a.email);
 const activeTokens=new Map(),verified=new Set();
-export const mailAccounts=()=>definitions.map(a=>({...a,kind:'email'}));
-function account(id){const a=definitions.find(a=>a.id===id);if(!a)throw Object.assign(new Error('Unknown mail account'),{status:404});return a}
+let mailEnabled=configuration.emailEnabled!==false;
+export function setMailEnabled(enabled){mailEnabled=enabled}
+export const mailAccounts=()=>mailEnabled?definitions.map(a=>({...a,kind:'email'})):[];
+function account(id){if(!mailEnabled)throw Object.assign(new Error('Email is temporarily disabled in Chord'),{status:503});const a=definitions.find(a=>a.id===id);if(!a)throw Object.assign(new Error('Unknown mail account'),{status:404});return a}
 async function token(id,force=false){
  const a=account(id),cached=activeTokens.get(id);if(cached&&!force&&cached.expires>Date.now()+60000)return cached.token;
  const file=process.env.CHORD_MAIL_CREDENTIALS_DIR?path.join(process.env.CHORD_MAIL_CREDENTIALS_DIR,id+'.json'):a.credentialsFile||path.join(os.homedir(),'.config/google-workspace-'+id,'credentials',a.email+'.json');

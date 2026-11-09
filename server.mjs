@@ -5,7 +5,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {mailAccounts,listMail,readMail,modifyMail,sendMail,mailAttachment,checkMail} from './mail-provider.mjs';
+import {mailAccounts,listMail,readMail,modifyMail,sendMail,mailAttachment,checkMail,setMailEnabled} from './mail-provider.mjs';
 import {ReadCache} from './read-cache.mjs';
 import {ArchiveService} from './archive-service.mjs';
 import {TimelineSeed} from './timeline-seed.mjs';
@@ -41,7 +41,7 @@ async function seedInbox(url){
   const id='matrix:'+c.id;
   if(!known.has(id))known.set(id,{...c,id,remoteId:c.id,kind:'chat',source:c.accountID,title:c.title,preview:c.preview?.text||'',unread:!!(c.unreadCount||c.isMarkedUnread),timestamp:c.lastActivity,direct:c.type==='single',participants:(c.participants?.items||[]).map(p=>p.id),canReply:!c.isReadOnly,canReact:!c.isReadOnly,canSend:!c.isReadOnly});
  }
- let items=[...known.values()].filter(c=>!c.isArchived&&(source==='all'||c.source===source)&&(!query||c.title?.toLowerCase().includes(query))).map(c=>directory.enrichConversation(c));
+ let items=[...known.values()].filter(c=>(config.emailEnabled!==false||c.kind!=='email')&&!c.isArchived&&(source==='all'||c.source===source)&&(!query||c.title?.toLowerCase().includes(query))).map(c=>directory.enrichConversation(c));
  if(!items.length)return undefined;
  if(unread)items=items.filter(c=>c.unread);if(server)items=items.filter(c=>c.source==='discord'&&(server==='all'||(server==='dm'?!c.serverID:c.serverID===server)));
  return {...rankInbox(items,directory.book,{view:url.searchParams.get('view')||'all'}),errors:[],cursors:{},hasMore:false};
@@ -115,6 +115,7 @@ export const server=http.createServer(async(req,res)=>{try{
  if(!['127.0.0.1:'+port,'localhost:'+port].includes(req.headers.host))return json(res,{error:'Invalid host'},403);
  if(req.headers.origin||req.headers['sec-fetch-site']==='cross-site')return json(res,{error:'Browser cross-origin requests refused'},403);
  config=await readFile(file,'utf8').then(JSON.parse);
+ setMailEnabled(config.emailEnabled!==false);
  if(!equal(req.headers.authorization?.replace(/^Bearer /,''),config.apiKey))return json(res,{error:'Authentication required'},401);
  const url=new URL(req.url,'http://127.0.0.1:'+port),p=url.pathname;
  if(req.headers['x-chord-refresh']==='true')url.searchParams.set('fresh','true');
@@ -126,7 +127,7 @@ export const server=http.createServer(async(req,res)=>{try{
   return json(res,archive.store.search(url.searchParams.get('query')||'',{limit:url.searchParams.get('limit')||60,offset:url.searchParams.get('offset')||0}));
  }
  if(p==='/api/connections'&&req.method==='GET')return json(res,await connections(url.searchParams.get('refresh')==='true'));
- if(p==='/api/inbox'&&req.method==='GET')return json(res,await readCache.get('inbox:'+queryKey(url),async()=>{const page=await inbox(url);setImmediate(()=>warmConversations(page.items));return page},{maxAge:5000,fresh:url.searchParams.get('fresh')==='true',seed:()=>seedInbox(url)}));
+ if(p==='/api/inbox'&&req.method==='GET')return json(res,await readCache.get('inbox:'+(config.emailEnabled===false?'email-paused:':'')+queryKey(url),async()=>{const page=await inbox(url);setImmediate(()=>warmConversations(page.items));return page},{maxAge:5000,fresh:url.searchParams.get('fresh')==='true',seed:()=>seedInbox(url)}));
  if(p==='/api/discord/servers'&&req.method==='GET'){await directory.refresh();const rooms=[...directory.catalog.rooms.values()].filter(r=>r.network==='discord');return json(res,{items:directory.catalog.servers.map(g=>({...g,channelCount:rooms.filter(r=>r.serverID===g.id).length})).sort((a,b)=>a.name.localeCompare(b.name)),directMessageCount:rooms.filter(r=>!r.serverID).length})}
  if(p==='/api/contacts'&&req.method==='GET'){directory.refresh().catch(()=>{});return json(res,{items:directory.book.list(url.searchParams.get('query')||''),errors:directory.catalog.errors})}
  if(p==='/api/contacts/refresh'&&req.method==='POST'){await directory.refresh(true);return json(res,{count:directory.book.list().length,errors:directory.catalog.errors})}

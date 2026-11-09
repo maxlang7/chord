@@ -67,6 +67,11 @@ excludes database indexes and recovery copies.
 A configured bridge and an authenticated network session are different states.
 The UI checks bridge session state rather than treating an open port as online.
 
+Set `emailEnabled` to `false` in `private/config.json` to pause both Gmail
+integrations. Chord hides email from the inbox and stops Gmail requests while
+keeping account definitions, credentials, and saved history. Set it to `true` to
+resume. The API reads this setting on each request.
+
 ## Reading and writing
 
 Choose an account and a conversation. The thread shows sender names, profile
