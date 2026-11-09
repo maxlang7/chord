@@ -45,6 +45,11 @@ Open Accounts to inspect each network and both email identities. Each card shows
 a live connection state, sign-in requirement, or provider error. Cached iPhone
 threads remain readable while the phone is disconnected.
 
+Expand Local archive in Accounts to see retained message and version counts, saved
+payload size, downloaded file count, migration progress, and worker errors. Refresh
+status updates both account connections and archive information. Payload size
+excludes database indexes and recovery copies.
+
 - Slack and WhatsApp use the local mautrix sign-in flows. WhatsApp shows its QR
   code in the native window. Multiple Slack workspaces share the Slack inbox.
 - Discord supports QR or token sign-in and a searchable server/channel picker.

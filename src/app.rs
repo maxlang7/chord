@@ -182,6 +182,7 @@ pub struct App {
     pub confirm_action: String,
     pub status: Value,
     pub connections: Value,
+    pub archive_status: Value,
     pub last_connection_refresh: Instant,
     pub focus_view: bool,
     pub discord_scope: Option<String>,
@@ -254,6 +255,7 @@ impl App {
             confirm_action: "send".into(),
             status: Value::Null,
             connections: Value::Null,
+            archive_status: Value::Null,
             last_connection_refresh: Instant::now(),
             focus_view: true,
             discord_scope: None,
@@ -780,8 +782,21 @@ impl App {
         self.notice = "Submitting your message…".into();
         self.mode = Mode::Compose;
     }
+    pub fn load_archive_status(&mut self) {
+        if let Some(api) = self.api.clone() {
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                let response = match api.get("/api/archive/status").await {
+                    Ok(value) => value,
+                    Err(error) => json!({"statusError": error.to_string()}),
+                };
+                let _ = tx.send(Response::Operation("archive_status".into(), Ok(response)));
+            });
+        }
+    }
     pub fn load_accounts(&mut self) {
         self.load_connections();
+        self.load_archive_status();
         self.mode = Mode::Accounts;
         if let Some(api) = self.api.clone() {
             let tx = self.tx.clone();
@@ -1121,6 +1136,7 @@ impl App {
                     Ok(v) => match label.as_str() {
                         "status" => self.status = v,
                         "connections" => self.connections = v,
+                        "archive_status" => self.archive_status = v,
                         "discord_servers" => {
                             self.servers = v["items"].as_array().cloned().unwrap_or_default();
                         }

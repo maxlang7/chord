@@ -1485,8 +1485,9 @@ impl Gui {
                             .color(p.muted),
                     );
                     ui.add_space(12.);
-                    if ui.button("Refresh connection status").clicked() {
+                    if ui.button("Refresh status").clicked() {
                         self.app.load_connections();
+                        self.app.load_archive_status();
                     }
                     let items = self.app.connections["items"]
                         .as_array()
@@ -1499,6 +1500,40 @@ impl Gui {
                     egui::ScrollArea::vertical()
                         .max_height(490.)
                         .show(ui, |ui| {
+                            ui.collapsing("Local archive", |ui| {
+                                let status = &self.app.archive_status;
+                                if status.is_null() {
+                                    ui.label(if self.app.demo {
+                                        "Archive status is unavailable in the design preview."
+                                    } else {
+                                        "Loading archive status…"
+                                    });
+                                } else if let Some(error) = status["statusError"].as_str() {
+                                    ui.colored_label(p.muted, format!("Archive status unavailable: {error}"));
+                                } else {
+                                    ui.label(format!(
+                                        "{} messages in {} conversations · {} saved versions",
+                                        status["messages"].as_u64().unwrap_or(0),
+                                        status["conversations"].as_u64().unwrap_or(0),
+                                        status["records"]["versions"].as_u64().unwrap_or(0)
+                                    ));
+                                    let stored: u64 = ["records", "blobs", "resources"].iter()
+                                        .map(|key| status[key]["storedBytes"].as_u64().unwrap_or(0)).sum();
+                                    ui.label(format!("Saved payloads: {:.1} MiB · {} downloaded files",
+                                        stored as f64 / 1_048_576.,
+                                        status["resources"]["files"].as_u64().unwrap_or(0)));
+                                    ui.label(format!("Migration: {} · Worker: {}",
+                                        status["migration"]["state"].as_str().unwrap_or("pending"),
+                                        status["worker"].as_str().unwrap_or("unknown")));
+                                    if let Some(error) = status["lastError"].as_str() {
+                                        ui.colored_label(p.muted, format!("Archive needs attention: {error}"));
+                                    }
+                                    ui.add(egui::Label::new(RichText::new(
+                                        "Fetched content is retained indefinitely. Older payloads are compressed after 30 days. Payload size excludes database indexes and recovery copies."
+                                    ).small().color(p.muted)).wrap());
+                                }
+                            });
+                            ui.separator();
                             for account in items {
                                 let id = account["id"].as_str().unwrap_or("");
                                 let connected = account["connected"] == true;
