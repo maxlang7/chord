@@ -38,6 +38,7 @@ pub struct Media {
     pub tx: UnboundedSender<Event>,
     rx: UnboundedReceiver<Event>,
     pending: usize,
+    pending_avatars: usize,
 }
 impl Default for Media {
     fn default() -> Self {
@@ -47,18 +48,26 @@ impl Default for Media {
             tx,
             rx,
             pending: 0,
+            pending_avatars: 0,
         }
     }
 }
 impl Media {
     pub fn request(&mut self, request: Request, api: Option<Api>, ctx: &egui::Context) {
         let key = request.key();
-        if self.cache.contains_key(&key) || self.pending >= 4 {
+        let avatar = matches!(&request, Request::Avatar(_));
+        if self.cache.contains_key(&key)
+            || self.pending >= 8
+            || (avatar && self.pending_avatars >= 2)
+        {
             return;
         }
         let Some(api) = api else { return };
         self.cache.insert(key.clone(), Entry::Loading);
         self.pending += 1;
+        if avatar {
+            self.pending_avatars += 1;
+        }
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         tokio::spawn(async move {
@@ -80,6 +89,9 @@ impl Media {
             match event {
                 Event::Media(key, result) => {
                     self.pending = self.pending.saturating_sub(1);
+                    if key.starts_with("avatar:") {
+                        self.pending_avatars = self.pending_avatars.saturating_sub(1);
+                    }
                     match *result {
                         Ok(mut data) => {
                             let avatar = key.starts_with("avatar:");

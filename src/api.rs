@@ -7,6 +7,7 @@ pub struct Api {
     client: reqwest::Client,
     base: String,
     key: String,
+    fresh: bool,
 }
 impl Api {
     pub fn new(base: &str, file: &Path) -> Result<Self> {
@@ -28,7 +29,13 @@ impl Api {
             client,
             base: base.trim_end_matches('/').into(),
             key,
+            fresh: false,
         })
+    }
+    pub fn fresh(&self) -> Self {
+        let mut api = self.clone();
+        api.fresh = true;
+        api
     }
     pub async fn request(&self, method: &str, route: &str, body: Option<Value>) -> Result<Value> {
         if !route.starts_with("/api/") || route.contains("..") {
@@ -38,6 +45,9 @@ impl Api {
             .client
             .request(method.parse()?, format!("{}{}", self.base, route))
             .bearer_auth(&self.key);
+        if self.fresh {
+            req = req.header("X-Chord-Refresh", "true");
+        }
         if let Some(b) = body {
             req = req.json(&b);
         }

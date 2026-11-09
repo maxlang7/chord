@@ -297,8 +297,7 @@ impl Gui {
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button("↻").on_hover_text("Refresh").clicked() {
-                            self.app.refresh(false);
-                            self.app.load_messages(false);
+                            self.app.refresh_now();
                         }
                     });
                 });
@@ -1700,9 +1699,7 @@ impl eframe::App for Gui {
             self.search_focus = true;
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::R)) {
-            self.app.refresh(false);
-            self.app.load_messages(false);
-            self.app.load_connections();
+            self.app.refresh_now();
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma)) {
             self.app.load_accounts();

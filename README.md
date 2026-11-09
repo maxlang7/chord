@@ -85,6 +85,30 @@ submission does not prove delivery to the remote recipient.
 Open chats and phone threads refresh every five seconds. Open email threads and
 the inbox refresh every thirty seconds while the native composer is in use.
 
+## Local caching
+
+Opening a recently visited conversation restores its messages and reading position
+from memory immediately. Up to 256 threads remain in memory. The API also saves
+inboxes, message pages, email bodies, phone threads, avatars, and attachments in
+`private/read-cache.sqlite`, so they survive application and API restarts. Existing
+saved Matrix history can populate a new cache without waiting for crypto startup.
+
+Cached content appears first; fresh messages, reactions, contact profiles, and
+inbox metadata load in the background. Recently listed conversations prefetch with
+two background requests at a time. Avatars cannot occupy every media download
+slot. Connection failures retain readable cached history and show an offline notice.
+
+The read cache is bounded to 96 MiB, and cached avatars and attachments to 384 MiB.
+Message and inbox snapshots revalidate within seconds; immutable attachments remain
+cached for thirty days. Explicit Refresh or Ctrl+R bypasses the freshness timer.
+Sending, editing, reacting, and read/archive changes invalidate related cached views.
+Cache files are owner-only local plaintext and excluded from Git, like the existing
+message history. Cached content may be older while a provider is unavailable.
+
+API reads return `_cache` metadata when served from storage. `fresh=true` or the
+`X-Chord-Refresh: true` header requests revalidation while keeping cached content
+available to concurrent readers.
+
 ## Search and focus
 
 Ctrl+K focuses search. Choose Conversations to search conversation names and

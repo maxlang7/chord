@@ -108,7 +108,7 @@ impl Editor {
 pub enum Response {
     Image(String, Result<crate::images::Decoded, String>),
     Inbox(u64, Result<Value, String>, bool),
-    Messages(String, Result<Value, String>, bool, bool),
+    Messages(String, u64, Result<Value, String>, bool, bool),
     Operation(String, Result<Value, String>),
     Sent(String, Result<Value, String>),
     Uploaded(String, Result<Value, String>),
@@ -125,6 +125,13 @@ struct Draft {
     reply: Option<Message>,
     attachment: Option<Value>,
     edit_message: Option<String>,
+}
+#[derive(Clone)]
+struct CachedThread {
+    messages: Vec<Message>,
+    cursor: Option<String>,
+    selection: usize,
+    used: Instant,
 }
 pub struct App {
     pub send_busy: bool,
@@ -152,6 +159,8 @@ pub struct App {
     pub loading: bool,
     pub message_loading: bool,
     pub message_cursor: Option<String>,
+    message_request_seq: u64,
+    message_cache: HashMap<String, CachedThread>,
     pub inbox_cursors: Value,
     pub scroll: u16,
     pub quit: bool,
@@ -222,6 +231,8 @@ impl App {
             loading: false,
             message_loading: false,
             message_cursor: None,
+            message_request_seq: 0,
+            message_cache: HashMap::new(),
             inbox_cursors: Value::Null,
             scroll: 0,
             quit: false,
@@ -299,7 +310,7 @@ impl App {
         self.conversations
             .iter()
             .filter(|c| {
-                (!self.demo || self.source == 0 || c.source == SOURCES[self.source].0)
+                (self.source == 0 || c.source == SOURCES[self.source].0)
                     && (!self.unread || c.unread)
             })
             .collect()
@@ -498,6 +509,14 @@ impl App {
         }
     }
     pub fn refresh(&mut self, append: bool) {
+        self.refresh_inbox(append, false);
+    }
+    pub fn refresh_now(&mut self) {
+        self.refresh_inbox(false, true);
+        self.request_messages(false, !self.messages.is_empty(), true);
+        self.load_connections();
+    }
+    fn refresh_inbox(&mut self, append: bool, fresh: bool) {
         if self.demo {
             return;
         }
@@ -506,6 +525,7 @@ impl App {
         self.loading = true;
         self.last_refresh = Instant::now();
         if let Some(api) = self.api.clone() {
+            let api = if fresh { api.fresh() } else { api };
             let source = SOURCES[self.source].0.to_string();
             let query = self.search.clone();
             let view = if self.focus_enabled() && query.is_empty() {
@@ -535,11 +555,53 @@ impl App {
                         server.as_deref(),
                     )
                     .await;
+                let refreshing = r.as_ref().is_ok_and(|v| v["_cache"]["refreshing"] == true);
                 let _ = tx.send(Response::Inbox(seq, result(r), append));
+                if refreshing {
+                    let r = api
+                        .fresh()
+                        .inbox(
+                            &source,
+                            view,
+                            &query,
+                            unread,
+                            cursor.as_deref(),
+                            server.as_deref(),
+                        )
+                        .await;
+                    let _ = tx.send(Response::Inbox(seq, result(r), append));
+                }
             });
         }
     }
+    fn remember_messages(&mut self) {
+        if self.messages.is_empty() {
+            return;
+        }
+        if let Some(c) = &self.active {
+            self.message_cache.insert(
+                c.id.clone(),
+                CachedThread {
+                    messages: self.messages.clone(),
+                    cursor: self.message_cursor.clone(),
+                    selection: self.message_selection,
+                    used: Instant::now(),
+                },
+            );
+        }
+        if self.message_cache.len() > 256
+            && let Some(oldest) = self
+                .message_cache
+                .iter()
+                .min_by_key(|(_, c)| c.used)
+                .map(|(id, _)| id.clone())
+        {
+            self.message_cache.remove(&oldest);
+        }
+    }
     pub fn open(&mut self, c: Conversation) {
+        self.remember_messages();
+        let cached = self.message_cache.get(&c.id).cloned();
         if let Some(old) = &self.active {
             let draft = Draft {
                 text: self.editor.text.clone(),
@@ -566,20 +628,31 @@ impl App {
         self.active = Some(c);
         self.focus = Focus::Messages;
         self.messages.clear();
+        self.message_cursor = None;
+        self.message_selection = 0;
+        if let Some(cached) = cached {
+            self.messages = cached.messages;
+            self.message_cursor = cached.cursor;
+            self.message_selection = cached.selection;
+            self.notice = "Showing saved messages. Updating…".into();
+        }
         self.scroll = 0;
         self.load_messages(false);
     }
     pub fn load_messages(&mut self, older: bool) {
-        self.request_messages(older, false);
+        self.request_messages(older, !older && !self.messages.is_empty(), false);
     }
-    fn request_messages(&mut self, older: bool, preserve: bool) {
+    fn request_messages(&mut self, older: bool, preserve: bool, fresh: bool) {
         if self.demo {
             return;
         }
         let Some(c) = self.active.clone() else { return };
+        self.message_request_seq += 1;
+        let seq = self.message_request_seq;
         self.message_loading = true;
         self.last_message_refresh = Instant::now();
         if let Some(api) = self.api.clone() {
+            let api = if fresh { api.fresh() } else { api };
             let tx = self.tx.clone();
             let cursor = if older {
                 self.message_cursor.clone()
@@ -588,7 +661,18 @@ impl App {
             };
             tokio::spawn(async move {
                 let r = api.messages(&c.id, cursor.as_deref()).await;
-                let _ = tx.send(Response::Messages(c.id, result(r), older, preserve));
+                let refreshing = r.as_ref().is_ok_and(|v| v["_cache"]["refreshing"] == true);
+                let _ = tx.send(Response::Messages(
+                    c.id.clone(),
+                    seq,
+                    result(r),
+                    older,
+                    preserve,
+                ));
+                if refreshing {
+                    let r = api.fresh().messages(&c.id, cursor.as_deref()).await;
+                    let _ = tx.send(Response::Messages(c.id, seq, result(r), older, true));
+                }
             });
         }
     }
@@ -910,55 +994,89 @@ impl App {
                     }
                     self.loading = false;
                     match r {
-                        Ok(v) => match serde_json::from_value::<Inbox>(v) {
-                            Ok(data) => {
-                                let selected = self.selected().map(|c| c.id);
-                                if append {
-                                    for c in data.items {
-                                        if !self.conversations.iter().any(|old| old.id == c.id) {
-                                            self.conversations.push(c)
+                        Ok(v) => {
+                            let cached = v["_cache"]["cached"] == true;
+                            let refreshing = v["_cache"]["refreshing"] == true;
+                            let cache_error = v["_cache"]["error"].is_string();
+                            match serde_json::from_value::<Inbox>(v) {
+                                Ok(data) => {
+                                    let selected = self.selected().map(|c| c.id);
+                                    if append {
+                                        for c in data.items {
+                                            if !self.conversations.iter().any(|old| old.id == c.id)
+                                            {
+                                                self.conversations.push(c)
+                                            }
                                         }
+                                    } else {
+                                        self.conversations = data.items
                                     }
-                                } else {
-                                    self.conversations = data.items
-                                }
-                                self.inbox_cursors = data.cursors;
-                                self.inbox_summary = data.summary;
-                                self.errors = data
-                                    .errors
-                                    .iter()
-                                    .map(|e| {
-                                        format!(
-                                            "{}: {}",
-                                            e["source"].as_str().unwrap_or("account"),
-                                            e["error"].as_str().unwrap_or("unavailable")
-                                        )
-                                    })
-                                    .collect();
-                                if let Some(id) = selected {
+                                    self.inbox_cursors = data.cursors;
+                                    self.inbox_summary = data.summary;
+                                    self.errors = data
+                                        .errors
+                                        .iter()
+                                        .map(|e| {
+                                            format!(
+                                                "{}: {}",
+                                                e["source"].as_str().unwrap_or("account"),
+                                                e["error"].as_str().unwrap_or("unavailable")
+                                            )
+                                        })
+                                        .collect();
+                                    if let Some(id) = selected {
+                                        self.selection = self
+                                            .visible()
+                                            .iter()
+                                            .position(|c| c.id == id)
+                                            .unwrap_or(0)
+                                    }
                                     self.selection =
-                                        self.visible().iter().position(|c| c.id == id).unwrap_or(0)
+                                        self.selection.min(self.visible().len().saturating_sub(1));
+                                    self.notice = if cached && cache_error {
+                                        "Showing saved inbox. Refresh is offline.".into()
+                                    } else if cached && refreshing {
+                                        "Showing saved inbox. Updating…".into()
+                                    } else if cached {
+                                        "Loaded saved inbox".into()
+                                    } else if self.errors.is_empty() {
+                                        "Synced locally".into()
+                                    } else {
+                                        format!(
+                                            "{} account issue(s) · a to inspect",
+                                            self.errors.len()
+                                        )
+                                    }
                                 }
-                                self.selection =
-                                    self.selection.min(self.visible().len().saturating_sub(1));
-                                self.notice = if self.errors.is_empty() {
-                                    "Synced locally".into()
-                                } else {
-                                    format!("{} account issue(s) · a to inspect", self.errors.len())
-                                }
+                                Err(e) => self.notice = e.to_string(),
                             }
-                            Err(e) => self.notice = e.to_string(),
-                        },
+                        }
                         Err(e) => self.notice = e,
                     }
                 }
-                Response::Messages(id, r, older, preserve) => {
+                Response::Messages(id, seq, r, older, preserve) => {
+                    if seq != self.message_request_seq {
+                        continue;
+                    }
                     if self.active.as_ref().map(|c| &c.id) != Some(&id) {
                         continue;
                     }
                     self.message_loading = false;
                     match r {
                         Ok(v) => {
+                            if v["_cache"]["cached"] == true {
+                                self.notice = if v["_cache"]["error"].is_string() {
+                                    "Showing saved messages. Refresh is offline.".into()
+                                } else if v["_cache"]["refreshing"] == true {
+                                    "Showing saved messages. Updating…".into()
+                                } else {
+                                    "Loaded saved messages".into()
+                                };
+                            } else if self.notice.starts_with("Showing saved")
+                                || self.notice == "Loaded saved messages"
+                            {
+                                self.notice = "Messages updated".into();
+                            }
                             if let Ok(mut m) =
                                 serde_json::from_value::<Vec<Message>>(v["items"].clone())
                             {
@@ -993,6 +1111,7 @@ impl App {
                                 {
                                     c.blue = v["thread"].clone()
                                 }
+                                self.remember_messages();
                             }
                         }
                         Err(e) => self.notice = e,
@@ -1087,7 +1206,7 @@ impl App {
                     5
                 }
         {
-            self.request_messages(false, true);
+            self.request_messages(false, true, false);
         }
         if self.mode == Mode::Login
             && self.login["type"] == "display_and_wait"
@@ -1389,10 +1508,7 @@ impl App {
                 }
             }
 
-            KeyCode::Char('R') => {
-                self.refresh(false);
-                self.load_messages(false)
-            }
+            KeyCode::Char('R') => self.refresh_now(),
             KeyCode::Char('n') => {
                 if self.focus == Focus::Inbox {
                     self.refresh(true)
@@ -1609,6 +1725,40 @@ mod tests {
         assert!(a.editor.text.is_empty());
     }
     #[test]
+    fn revisiting_a_thread_restores_messages_cursor_and_reading_position_immediately() {
+        let mut a = App::new(None, true);
+        let first = a.active.clone().unwrap();
+        a.message_cursor = Some("older-page".into());
+        a.message_selection = 1;
+        let expected = a.messages[1].id.clone();
+        a.open(Conversation {
+            id: "other".into(),
+            ..Default::default()
+        });
+        assert!(a.messages.is_empty());
+        a.open(first);
+        assert_eq!(a.messages[1].id, expected);
+        assert_eq!(a.message_selection, 1);
+        assert_eq!(a.message_cursor.as_deref(), Some("older-page"));
+    }
+    #[test]
+    fn a_late_response_from_an_earlier_visit_cannot_replace_newer_messages() {
+        let mut a = App::new(None, true);
+        let id = a.active.as_ref().unwrap().id.clone();
+        let expected = a.messages.last().unwrap().id.clone();
+        a.message_request_seq = 2;
+        a.tx.send(Response::Messages(
+            id,
+            1,
+            Ok(json!({"items":[{"id":"stale"}]})),
+            false,
+            false,
+        ))
+        .unwrap();
+        a.poll();
+        assert_eq!(a.messages.last().unwrap().id, expected);
+    }
+    #[test]
     fn editor_preserves_graphemes() {
         let mut e = Editor::default();
         e.insert("hello 👨‍👩‍👧‍👦");
@@ -1724,7 +1874,7 @@ mod tests {
             },
         ];
         app.message_selection = 0;
-        app.tx.send(Response::Messages(room,Ok(json!({"items":[{"id":"recent","text":"Updated","timestamp":"2026-10-30T00:00:00Z"},{"id":"new","text":"Incoming","timestamp":"2026-10-30T01:00:00Z"}]})),false,true)).unwrap();
+        app.tx.send(Response::Messages(room,app.message_request_seq,Ok(json!({"items":[{"id":"recent","text":"Updated","timestamp":"2026-10-30T00:00:00Z"},{"id":"new","text":"Incoming","timestamp":"2026-10-30T01:00:00Z"}]})),false,true)).unwrap();
         app.poll();
         assert_eq!(app.messages.len(), 3);
         assert_eq!(app.selected_message().unwrap().id, "old");
