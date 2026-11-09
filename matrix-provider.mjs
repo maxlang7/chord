@@ -8,7 +8,7 @@ const networkFor=id=>/discord/i.test(id)?'Discord':/slack/i.test(id)?'Slack':/wh
 const page=(items,limit=200,offset=0)=>({items:items.slice(offset,offset+limit),hasMore:items.length>offset+limit,oldestCursor:String(offset+limit),newestCursor:null});
 
 export class MatrixProvider{
- constructor(client,account,{dataDir,save=true}={}){this.client=client;this.account=account;this.dataDir=dataDir;this.persist=save;this.chats=new Map();this.timelines=new Map();this.reactions=new Map();this.uploads=new Map();this.mediaFiles=new Map();this.error=null;this.started=false;this.flushTimer=null;this.relationCache=new Map();this.messageFetches=new Map();this.relationRefresh=new Map();}
+ constructor(client,account,{dataDir,save=true}={}){this.client=client;this.account=account;this.dataDir=dataDir;this.persist=save;this.chats=new Map();this.timelines=new Map();this.reactions=new Map();this.uploads=new Map();this.mediaFiles=new Map();this.error=null;this.started=false;this.flushTimer=null;this.relationCache=new Map();this.messageFetches=new Map();this.relationRefresh=new Map();this.relationVersions=new Map();}
  async raw(method,p,body,query){
   // Metadata does not need the crypto worker. Use a bounded HTTP request so a
   // homeserver reconnect cannot leave room discovery waiting on its sync loop.
@@ -67,7 +67,7 @@ export class MatrixProvider{
    const message=this.normalizeMessage(event);const timeline=this.timelines.get(event.roomId)||[];const index=timeline.findIndex(m=>m.id===message.id);if(index>=0)timeline[index]=message;else timeline.push(message);timeline.sort((a,b)=>new Date(a.timestamp)-new Date(b.timestamp));this.timelines.set(event.roomId,timeline);
    if(room){room.preview=message;room.lastActivity=message.timestamp;}
   }else if(event.kind==='reaction'){
-   const key=event.roomId+'|'+event.relatesTo;const current=this.reactions.get(key)||[];const filtered=current.filter(r=>r.id!==event.eventId);if(event.added)filtered.push({id:event.eventId,reactionKey:event.key,participantID:event.sender.userId});this.reactions.set(key,filtered);
+   const key=event.roomId+'|'+event.relatesTo;this.relationVersions.set(key,(this.relationVersions.get(key)||0)+1);const current=this.reactions.get(key)||[];const filtered=current.filter(r=>r.id!==event.eventId);if(event.added)filtered.push({id:event.eventId,reactionKey:event.key,participantID:event.sender.userId});this.reactions.set(key,filtered);
   }else if(event.kind==='event'&&event.type==='m.room.redaction'){
    const redacts=event.raw?.redacts||event.content?.redacts;for(const [key,items] of this.reactions)this.reactions.set(key,items.filter(r=>r.id!==redacts));const m=this.timelines.get(event.roomId)?.find(m=>m.id===redacts);if(m){m.isDeleted=true;m.text='[Message deleted]';m.attachments=[];m.reactions=[];}
   }else if(event.class==='state'&&room){if(event.type==='m.room.name')room.title=event.content?.name||room.title;if(event.type==='m.room.topic')room.description=event.content?.topic;}
@@ -90,8 +90,8 @@ export class MatrixProvider{
   if(!due.length)return;
   const work=(async()=>{
    for(let offset=0;offset<due.length;offset+=6)await Promise.all(due.slice(offset,offset+6).map(async m=>{
-    const key=roomId+'|'+m.id;
-    try{const data=await this.raw('GET',`/_matrix/client/v1/rooms/${enc(roomId)}/relations/${enc(m.id)}/m.annotation/m.reaction`,undefined,{limit:'100'});this.reactions.set(key,(data.chunk||[]).map(e=>({id:e.event_id,reactionKey:e.content?.['m.relates_to']?.key,participantID:e.sender})).filter(r=>r.reactionKey));this.relationCache.set(key,Date.now())}catch{}
+    const key=roomId+'|'+m.id,version=this.relationVersions.get(roomId+'|'+m.id)||0;
+    try{const data=await this.raw('GET',`/_matrix/client/v1/rooms/${enc(roomId)}/relations/${enc(m.id)}/m.annotation/m.reaction`,undefined,{limit:'100'});if(version!==(this.relationVersions.get(key)||0))return;this.reactions.set(key,(data.chunk||[]).map(e=>({id:e.event_id,reactionKey:e.content?.['m.relates_to']?.key,participantID:e.sender})).filter(r=>r.reactionKey));this.relationCache.set(key,Date.now())}catch{}
    }));
    this.scheduleSave();
   })().finally(()=>{this.relationRefresh.delete(roomId)});
@@ -143,8 +143,8 @@ export class MatrixProvider{
     else throw Object.assign(new Error('Reminders are not implemented by the independent transport'),{status:501});this.scheduleSave();return c;
    }
    if(p.includes('/reactions')){
-    if(method==='POST'){const r=await this.client.reactions.send({roomId,eventId,key:body.reactionKey});this.relationCache.delete(roomId+'|'+eventId);return {success:true,messageID:eventId,chatID:roomId,reactionKey:body.reactionKey,eventID:r.eventId}}
-    if(method==='DELETE'){await this.client.reactions.redact({roomId,eventId,key});this.relationCache.delete(roomId+'|'+eventId);return {success:true}}
+    if(method==='POST'){const r=await this.client.reactions.send({roomId,eventId,key:body.reactionKey});const k=roomId+'|'+eventId;this.relationVersions.set(k,(this.relationVersions.get(k)||0)+1);this.reactions.set(k,[...(this.reactions.get(k)||[]).filter(x=>x.id!==r.eventId),{id:r.eventId,reactionKey:body.reactionKey,participantID:this.account.userId}]);this.relationCache.set(k,Date.now());this.scheduleSave();return {success:true,messageID:eventId,chatID:roomId,reactionKey:body.reactionKey,eventID:r.eventId}}
+    if(method==='DELETE'){await this.client.reactions.redact({roomId,eventId,key});const k=roomId+'|'+eventId;this.relationVersions.set(k,(this.relationVersions.get(k)||0)+1);this.reactions.set(k,(this.reactions.get(k)||[]).filter(x=>!(x.reactionKey===key&&x.participantID===this.account.userId)));this.relationCache.set(k,Date.now());this.scheduleSave();return {success:true}}
    }
    if(eventId){
     if(method==='GET'){const {message}=await this.client.messages.get({roomId,eventId});if(!message)throw Object.assign(new Error('Message not found'),{status:404});return this.normalizeMessage(message)}
