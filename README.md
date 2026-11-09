@@ -165,6 +165,26 @@ names alone never merge people. Profiles support local names, favorites, explici
 identity linking with review, and undo. These edits do not change network
 profiles or the phone address book.
 
+Discord attention rules can be configured locally under `discordAttention` in
+`private/config.json`. `visibleServerIDs` controls the preferred server list,
+`allMessagesChannelIDs` allows unread badges for every message in selected channels,
+and `mentionsOnlyServerIDs` allows unread badges only for unread highlighted mentions.
+The default inbox shows selected channels and unread mentions only. All servers
+remain searchable in the picker; Show other servers reveals the full list.
+Other Discord channels stay accessible under All Discord channels and search, with
+unread badges suppressed. These rules do not alter network read receipts or mute settings.
+
+Double-click or right-click a message to open the reaction picker on supported chat
+connections, including Slack, Discord, WhatsApp, and Matrix. Selecting your existing
+reaction removes it. Email, Bluetooth phone messages, and saved archive versions do
+not support sending reactions.
+
+`POST /api/slack/cache-profiles` with `{workspace: "<workspace ID>"}` retrieves all
+profile pages from a connected Slack workspace and caches profile images in the local
+media cache and permanent archive. It does not read message attachments or change read
+state. Existing local Slack authentication is reused; credentials are never sent to
+photo hosts. The response reports missing photos and per-profile failures.
+
 Ctrl+R refreshes. Ctrl+, opens Accounts. Themes are saved in `private/ui.json`.
 
 ## API and MCP

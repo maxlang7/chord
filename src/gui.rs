@@ -1,3 +1,4 @@
+mod icons;
 mod media;
 mod theme;
 
@@ -27,6 +28,7 @@ pub struct Gui {
     scroll_to: Option<String>,
     search_focus: bool,
     message_search: bool,
+    reaction_target: Option<(Conversation, Message)>,
     search_busy: bool,
     search_seq: u64,
     search_results: Value,
@@ -74,6 +76,7 @@ impl Gui {
             scroll_to: None,
             search_focus: false,
             message_search: false,
+            reaction_target: None,
             search_busy: false,
             search_seq: 0,
             search_results: Value::Null,
@@ -144,7 +147,7 @@ impl Gui {
                         .color(p.muted),
                 );
                 ui.add_space(8.);
-                for (index, label, short) in [
+                for (index, label, _short) in [
                     (0, "All accounts", "All"),
                     (1, "Slack", "S"),
                     (2, "Discord", "D"),
@@ -153,21 +156,8 @@ impl Gui {
                     (5, "Personal email", "@"),
                     (6, "CMU email", "CMU"),
                 ] {
-                    let title = if compact { short } else { label };
-                    let selected = self.app.source == index;
-                    let button = egui::Button::new(RichText::new(title).color(if selected {
-                        p.accent
-                    } else {
-                        p.text
-                    }))
-                    .fill(if selected {
-                        p.raised
-                    } else {
-                        Color32::TRANSPARENT
-                    })
-                    .corner_radius(9)
-                    .min_size(egui::vec2(ui.available_width(), 38.));
-                    let response = ui.add(button).on_hover_text(label);
+                    let response =
+                        icons::button(ui, index, label, compact, self.app.source == index, p);
                     if response.clicked() {
                         if index == 2 {
                             self.app.open_servers();
@@ -951,6 +941,22 @@ impl Gui {
                 });
             })
             .response;
+        if chat.can_react {
+            let activation_pos = ui.input(|input| {
+                input.pointer.interact_pos().filter(|pos| {
+                    response.rect.contains(*pos)
+                        && (input
+                            .pointer
+                            .button_double_clicked(egui::PointerButton::Primary)
+                            || input.pointer.button_clicked(egui::PointerButton::Secondary))
+                })
+            });
+            let activated =
+                activation_pos.is_some_and(|pos| ui.ctx().layer_id_at(pos) == Some(ui.layer_id()));
+            if activated {
+                self.reaction_target = Some((chat.clone(), m.clone()));
+            }
+        }
         if self.scroll_to.as_ref() == Some(&m.id) {
             response.scroll_to_me(Some(egui::Align::Center));
             self.scroll_to = None;
@@ -961,11 +967,56 @@ impl Gui {
         self.app.begin_compose(true);
     }
     fn react(&mut self, chat: &Conversation, m: &Message, key: &str, remove: bool) {
+        if !chat.can_react {
+            return;
+        }
         self.app.operation(
             "Reaction queued",
             Api::conversation(&chat.id, "reaction"),
             json!({"messageID":m.id,"reactionKey":key,"remove":remove}),
         );
+    }
+    fn reaction_picker(&mut self, ctx: &egui::Context) {
+        let Some((chat, message)) = self.reaction_target.clone() else {
+            return;
+        };
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.reaction_target = None;
+            return;
+        }
+        let mut open = true;
+        let mut picked = false;
+        egui::Window::new("React to message")
+            .id(egui::Id::new("reaction_picker"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(300.)
+            .show(ctx, |ui| {
+                ui.label(RichText::new(&chat.title).strong());
+                ui.label(&message.sender_name);
+                ui.add(egui::Label::new(one_line(&message.text)).truncate());
+                ui.label("Choose an emoji. Select your existing reaction to remove it.");
+                ui.horizontal_wrapped(|ui| {
+                    for key in REACTIONS {
+                        let mine = message.reactions.iter().any(|r| {
+                            r["reactionKey"] == *key
+                                && r["participantID"].is_string()
+                                && r["participantID"] == self.app.status["userID"]
+                        });
+                        if ui
+                            .selectable_label(mine, RichText::new(*key).size(24.))
+                            .clicked()
+                        {
+                            self.react(&chat, &message, key, mine);
+                            picked = true;
+                        }
+                    }
+                });
+            });
+        if !open || picked {
+            self.reaction_target = None;
+        }
     }
     fn reaction_menu(&mut self, ui: &mut egui::Ui, chat: &Conversation, m: &Message, p: Palette) {
         ui.menu_button(RichText::new("☺").color(p.muted), |ui| {
@@ -1191,6 +1242,10 @@ impl Gui {
                                 .hint_text("Find a server…")
                                 .desired_width(f32::INFINITY),
                         );
+                        if ui.checkbox(&mut self.app.show_other_servers, "Show other servers").changed() {
+                            self.app.server_selection = 0;
+                        }
+                        ui.label(RichText::new("Search finds every server. Quiet channels never add unread badges.").small());
                         let entries = self.app.visible_servers();
                         egui::ScrollArea::vertical()
                             .max_height(480.)
@@ -1747,6 +1802,7 @@ impl Gui {
 }
 impl eframe::App for Gui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.reaction_picker(ctx);
         self.app.poll();
         if self.gallery.is_empty()
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
@@ -1900,6 +1956,76 @@ mod tests {
         assert_eq!(initials("Alex Chen"), "AC");
         assert_eq!(initials("Élodie"), "É");
         assert_eq!(initials(""), "?");
+    }
+    #[test]
+    fn reaction_gestures_target_the_clicked_message_and_respect_capabilities() {
+        for (button, clicks, enabled) in [
+            (egui::PointerButton::Secondary, 1, true),
+            (egui::PointerButton::Primary, 2, true),
+            (egui::PointerButton::Secondary, 1, false),
+        ] {
+            let ctx = egui::Context::default();
+            let mut gui = Gui::new(App::new(None, true), &ctx);
+            let mut chat = gui.app.active.clone().unwrap();
+            chat.can_react = enabled;
+            let message = gui.app.messages[0].clone();
+            let mut time = 0.;
+            let mut rect = egui::Rect::NOTHING;
+            let mut frame = |gui: &mut Gui, events| {
+                time += 0.08;
+                let _ = ctx.run(
+                    egui::RawInput {
+                        time: Some(time),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            let top = ui.cursor().top();
+                            gui.message(ui, &chat, &message, 0, gui.theme.palette());
+                            rect = egui::Rect::from_min_max(
+                                egui::pos2(ui.min_rect().left(), top),
+                                egui::pos2(ui.max_rect().right(), ui.cursor().top()),
+                            );
+                        });
+                    },
+                );
+                rect.center()
+            };
+            let pos = frame(&mut gui, vec![]);
+            for _ in 0..clicks {
+                frame(
+                    &mut gui,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button,
+                            pressed: true,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+                frame(
+                    &mut gui,
+                    vec![egui::Event::PointerButton {
+                        pos,
+                        button,
+                        pressed: false,
+                        modifiers: Default::default(),
+                    }],
+                );
+            }
+            assert_eq!(
+                gui.reaction_target.is_some(),
+                enabled,
+                "button={button:?} clicks={clicks} pos={pos:?} rect={rect:?}"
+            );
+            if let Some((target_chat, target_message)) = gui.reaction_target {
+                assert_eq!(target_chat.id, chat.id);
+                assert_eq!(target_message.id, message.id);
+            }
+        }
     }
     #[test]
     fn native_layout_renders_at_normal_and_compact_sizes() {

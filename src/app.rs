@@ -190,6 +190,7 @@ pub struct App {
     pub server_label: String,
     pub servers: Vec<Value>,
     pub server_query: String,
+    pub show_other_servers: bool,
     pub server_selection: usize,
     pub inbox_summary: Value,
     pub contacts: Vec<Value>,
@@ -263,6 +264,7 @@ impl App {
             server_label: String::new(),
             servers: vec![],
             server_query: String::new(),
+            show_other_servers: false,
             server_selection: 0,
             inbox_summary: Value::Null,
             contacts: vec![],
@@ -347,12 +349,13 @@ impl App {
         entries
             .into_iter()
             .filter(|s| {
-                query.is_empty()
-                    || s["name"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_lowercase()
-                        .contains(&query)
+                (query.is_empty() && (self.show_other_servers || s["preferred"] != false))
+                    || (!query.is_empty()
+                        && s["name"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .contains(&query))
             })
             .collect()
     }
@@ -372,6 +375,10 @@ impl App {
     }
     fn server_key(&mut self, key: KeyEvent) {
         match key.code {
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.show_other_servers = !self.show_other_servers;
+                self.server_selection = 0;
+            }
             KeyCode::Esc => self.mode = Mode::Browse,
             KeyCode::Down => {
                 self.server_selection =
@@ -1854,6 +1861,20 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.mode, Mode::Details);
         assert_eq!(app.details["id"], source["id"]);
+    }
+    #[test]
+    fn quiet_servers_are_hidden_until_searched_or_explicitly_revealed() {
+        let mut app = App::new(None, true);
+        app.servers = vec![
+            json!({"id":"1","name":"SDC Buggy","preferred":true}),
+            json!({"id":"2","name":"Other server","preferred":false}),
+        ];
+        assert_eq!(app.visible_servers().len(), 3);
+        app.server_query = "other".into();
+        assert_eq!(app.visible_servers()[0]["id"], "2");
+        app.server_query.clear();
+        app.show_other_servers = true;
+        assert_eq!(app.visible_servers().len(), 4);
     }
     #[test]
     fn selecting_a_discord_server_shows_channels_without_changing_global_focus() {

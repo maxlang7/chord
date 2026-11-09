@@ -898,7 +898,7 @@ fn render_servers(frame: &mut Frame, app: &App, t: Theme) {
             )),
             Line::from(Span::styled(
                 format!(
-                    "{} servers · choosing a server shows all its channels",
+                    "{} servers · search all · Ctrl+A reveal others",
                     app.servers.len()
                 ),
                 Style::new().fg(t.muted),
