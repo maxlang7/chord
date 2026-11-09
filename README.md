@@ -98,12 +98,30 @@ inbox metadata load in the background. Recently listed conversations prefetch wi
 two background requests at a time. Avatars cannot occupy every media download
 slot. Connection failures retain readable cached history and show an offline notice.
 
-The read cache is bounded to 96 MiB, and cached avatars and attachments to 384 MiB.
-Message and inbox snapshots revalidate within seconds; immutable attachments remain
-cached for thirty days. Explicit Refresh or Ctrl+R bypasses the freshness timer.
-Sending, editing, reacting, and read/archive changes invalidate related cached views.
-Cache files are owner-only local plaintext and excluded from Git, like the existing
-message history. Cached content may be older while a provider is unavailable.
+Everything Chord receives or downloads is retained locally without a byte budget or
+age-based deletion. `private/archive.sqlite` keeps messages, captured versions,
+email bodies, phone threads, cached responses, and downloaded file bytes. Identical
+files share storage. Synced chat messages are saved even when their room is unopened.
+Remote messages and attachments that Chord has never fetched are not yet local.
+
+After 30 days, message bodies and saved files are losslessly compressed with Brotli
+quality 11 in a background worker. Message timestamps determine age; opening an old
+message does not reset it. Recent startup snapshots use lighter compression and
+omit old bodies only after the archive confirms their capture. A SQLite full-text
+index searches text, subjects, sender names, and attachment filenames while offline.
+It does not OCR attachments or index the contents of PDFs, audio, or video.
+
+The first startup imports existing history and cached content. Imports can resume
+on restart and preserve the original history file as a recovery copy. Compression
+verifies checksums and round trips before replacing stored bytes. Maintenance runs
+every ten minutes while the API is open. `/api/archive/status` and the MCP tool
+`archive_status` report migration, compression, sizes, and counts.
+
+Message and inbox snapshots revalidate within seconds. Explicit Refresh or Ctrl+R
+bypasses freshness timers. Sending, editing, reacting, and read/archive changes
+invalidate current views without deleting retained versions. Files are owner-only,
+excluded from Git, and are not encrypted at rest. Cached content may be older while
+a provider is unavailable.
 
 API reads return `_cache` metadata when served from storage. `fresh=true` or the
 `X-Chord-Refresh: true` header requests revalidation while keeping cached content
@@ -112,10 +130,16 @@ available to concurrent readers.
 ## Search and focus
 
 Ctrl+K focuses search. Choose Conversations to search conversation names and
-Gmail, or Message text to search synced chat history, cached phone messages, and
-both Gmail accounts. Chat search expands as history syncs or is opened. It is
-not a search of every message ever stored by the remote network. Email searches
-accept Gmail syntax. Search results open their source conversation.
+Gmail, or Message text to search every locally retained message, including older
+compressed messages and saved versions. Results open the exact matching version in
+a read-only archive conversation. More results pages through the full local index.
+Archived attachments open from locally saved bytes. These actions never contact a
+provider, mark messages read, or change a remote conversation. Use the normal inbox
+to open a live conversation and reply.
+
+Local coverage expands as history syncs or is fetched. Gmail syntax remains available
+in Conversations and the mail search API. `/api/search?remote=true&query=...` explicitly
+searches providers using the original unified search.
 
 Focus ranks recent direct conversations, personal unread messages, mentions and
 replies, conversations you have participated in, favorite contacts, and important

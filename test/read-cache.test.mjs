@@ -24,10 +24,10 @@ test('mutations prevent an old in-flight response from overwriting the invalidat
   assert.equal(c.peek('messages:one').value.items[0].id,'original');assert.equal(c.peek('messages:one').updated,0);
  }finally{c.close()}
 });
-test('account namespaces, immutable media, byte limits, and seeded first reads are separate',async()=>{
+test('account namespaces, media, indefinite retention, and seeded first reads are separate',async()=>{
  const c=new ReadCache(':memory:',{namespace:'owner-a',readBytes:200,mediaBytes:5000});try{
   c.put('media:one',{data:'file'},{kind:'media'});c.put('messages:a',{text:'x'.repeat(100)});c.put('messages:b',{text:'y'.repeat(100)});
-  assert.equal(c.peek('messages:a'),null);assert.ok(c.peek('messages:b'));
+  assert.ok(c.peek('messages:a'));assert.ok(c.peek('messages:b'));
   c.invalidate('messages:');assert.notEqual(c.peek('media:one').updated,0);
   c.namespace='owner-b';assert.equal(c.peek('media:one'),null);
   let finish;const seeded=await c.get('messages:c',()=>new Promise(r=>finish=r),{seed:()=>({items:[{id:'legacy'}]})});

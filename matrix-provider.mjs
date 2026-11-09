@@ -2,13 +2,15 @@ import {readFile,writeFile,mkdir,rename} from 'node:fs/promises';
 import path from 'node:path';
 import {randomBytes} from 'node:crypto';
 import {openMatrixStore} from './matrix-store.mjs';
+import {ArchiveStore,accountNamespace,digest,DAY,RETENTION_DAYS} from './archive-store.mjs';
+import {readHistory,writeHistory} from './history-file.mjs';
 
 const enc=encodeURIComponent;
 const networkFor=id=>/discord/i.test(id)?'Discord':/slack/i.test(id)?'Slack':/whatsapp/i.test(id)?'WhatsApp':/blueferry/i.test(id)?'iPhone':'Matrix';
 const page=(items,limit=200,offset=0)=>({items:items.slice(offset,offset+limit),hasMore:items.length>offset+limit,oldestCursor:String(offset+limit),newestCursor:null});
 
 export class MatrixProvider{
- constructor(client,account,{dataDir,save=true}={}){this.client=client;this.account=account;this.dataDir=dataDir;this.persist=save;this.chats=new Map();this.timelines=new Map();this.reactions=new Map();this.uploads=new Map();this.mediaFiles=new Map();this.error=null;this.started=false;this.flushTimer=null;this.relationCache=new Map();this.messageFetches=new Map();this.relationRefresh=new Map();this.relationVersions=new Map();}
+ constructor(client,account,{dataDir,save=true,archive}={}){this.client=client;this.account=account;this.dataDir=dataDir;this.persist=save;this.archive=archive;this.chats=new Map();this.timelines=new Map();this.reactions=new Map();this.uploads=new Map();this.mediaFiles=new Map();this.error=null;this.started=false;this.flushTimer=null;this.relationCache=new Map();this.messageFetches=new Map();this.relationRefresh=new Map();this.relationVersions=new Map();}
  async raw(method,p,body,query){
   // Metadata does not need the crypto worker. Use a bounded HTTP request so a
   // homeserver reconnect cannot leave room discovery waiting on its sync loop.
@@ -21,7 +23,7 @@ export class MatrixProvider{
  }
  async start(){
   if(this.started)return;await this.client.boot();
-  if(this.persist){const saved=await readFile(path.join(this.dataDir,'matrix-timeline.json'),'utf8').then(JSON.parse).catch(()=>null);if(saved){this.chats=new Map(saved.chats||[]);this.timelines=new Map(saved.timelines||[]);this.reactions=new Map(saved.reactions||[]);this.mediaFiles=new Map(saved.mediaFiles||[])}}
+  if(this.persist){const saved=await readHistory(this.dataDir).catch(e=>{if(e.code!=='ENOENT')throw e;return null});if(saved){this.chats=new Map(saved.chats||[]);this.timelines=new Map(saved.timelines||[]);this.reactions=new Map(saved.reactions||[]);this.mediaFiles=new Map(saved.mediaFiles||[])}}
   await this.refreshRooms();this.subscription=await this.client.subscribe(undefined,e=>this.onEvent(e));this.subscription.done.catch(e=>{this.error=e.message});this.started=true;
  }
  async refreshRooms(){
@@ -54,8 +56,24 @@ export class MatrixProvider{
  scheduleSave(){if(!this.persist)return;clearTimeout(this.flushTimer);this.flushTimer=setTimeout(()=>{this.save().catch(e=>this.error=e.message)},300)}
  async save(){
   if(!this.persist)return;
-  const snapshot=JSON.stringify({chats:[...this.chats],timelines:[...this.timelines],reactions:[...this.reactions],mediaFiles:[...this.mediaFiles]});
-  this.saveWork=(this.saveWork||Promise.resolve()).catch(()=>{}).then(async()=>{const file=path.join(this.dataDir,'matrix-timeline.json');await writeFile(file+'.pending',snapshot,{mode:0o600});await rename(file+'.pending',file)});
+  this.coldSaved??=new Map();
+  const cutoff=Date.now()-RETENTION_DAYS*DAY,timelines=[],hotIDs=new Set();
+  for(const [id,messages] of this.timelines){
+   const hot=[],pending=[];
+   for(const m of messages){
+    if(!this.archive||Date.parse(m.timestamp)>=cutoff||!Number.isFinite(Date.parse(m.timestamp))){hot.push(m);hotIDs.add(id+'|'+m.id);continue}
+    const saved={...m,reactions:this.reactions.get(id+'|'+m.id)||m.reactions||[]},hash=digest(JSON.stringify(saved)),key=id+'|'+m.id;
+    // Confirm the full old version is durably captured before omitting its body
+    // from the small startup snapshot. A failed capture leaves the old file intact.
+    if(this.coldSaved.get(key)!==hash)pending.push({saved,key,hash});
+   }
+   for(let i=0;i<pending.length;i+=100){const batch=pending.slice(i,i+100);this.retain(id,batch.map(x=>x.saved),{historical:true});for(const x of batch)this.coldSaved.set(x.key,x.hash)}
+   timelines.push([id,hot]);
+  }
+  const snapshot={chats:[...this.chats],timelines,reactions:[...this.reactions].filter(([key])=>hotIDs.has(key)),mediaFiles:[...this.mediaFiles]};
+  // Snapshot eagerly so queued writes cannot observe a subsequently mutated message.
+  const stable=JSON.parse(JSON.stringify(snapshot));
+  this.saveWork=(this.saveWork||Promise.resolve()).catch(()=>{}).then(()=>writeHistory(this.dataDir,stable));
   return this.saveWork;
  }
 
@@ -67,12 +85,15 @@ export class MatrixProvider{
    const message=this.normalizeMessage(event);const timeline=this.timelines.get(event.roomId)||[];const index=timeline.findIndex(m=>m.id===message.id);if(index>=0)timeline[index]=message;else timeline.push(message);timeline.sort((a,b)=>new Date(a.timestamp)-new Date(b.timestamp));this.timelines.set(event.roomId,timeline);
    if(room){room.preview=message;room.lastActivity=message.timestamp;}
   }else if(event.kind==='reaction'){
-   const key=event.roomId+'|'+event.relatesTo;this.relationVersions.set(key,(this.relationVersions.get(key)||0)+1);const current=this.reactions.get(key)||[];const filtered=current.filter(r=>r.id!==event.eventId);if(event.added)filtered.push({id:event.eventId,reactionKey:event.key,participantID:event.sender.userId});this.reactions.set(key,filtered);
+   const key=event.roomId+'|'+event.relatesTo;this.relationVersions.set(key,(this.relationVersions.get(key)||0)+1);const current=this.reactions.get(key)||this.archive?.message('matrix:'+event.roomId,event.relatesTo)?.reactions||[];const filtered=current.filter(r=>r.id!==event.eventId);if(event.added)filtered.push({id:event.eventId,reactionKey:event.key,participantID:event.sender.userId});this.reactions.set(key,filtered);
   }else if(event.kind==='event'&&event.type==='m.room.redaction'){
-   const redacts=event.raw?.redacts||event.content?.redacts;for(const [key,items] of this.reactions)this.reactions.set(key,items.filter(r=>r.id!==redacts));const m=this.timelines.get(event.roomId)?.find(m=>m.id===redacts);if(m){m.isDeleted=true;m.text='[Message deleted]';m.attachments=[];m.reactions=[];}
+   const redacts=event.raw?.redacts||event.content?.redacts;for(const [key,items] of this.reactions)this.reactions.set(key,items.filter(r=>r.id!==redacts));const m=this.timelines.get(event.roomId)?.find(m=>m.id===redacts)||this.archive?.message('matrix:'+event.roomId,redacts);if(m){m.isDeleted=true;m.text='[Message deleted]';m.attachments=[];m.reactions=[];this.retain(event.roomId,[m])}
   }else if(event.class==='state'&&room){if(event.type==='m.room.name')room.title=event.content?.name||room.title;if(event.type==='m.room.topic')room.description=event.content?.topic;}
+  if(event.kind==='message')this.retain(event.roomId,[this.timelines.get(event.roomId).find(m=>m.id===event.eventId)]);
+  else if(event.kind==='reaction'){const m=this.timelines.get(event.roomId)?.find(m=>m.id===event.relatesTo)||this.archive?.message('matrix:'+event.roomId,event.relatesTo);if(m)this.retain(event.roomId,[m])}
   this.scheduleSave();
  }
+ retain(roomId,messages,options){const c=this.chats.get(roomId)||{};this.archive?.recordMessages('matrix:'+roomId,messages.filter(Boolean).map(m=>({...m,reactions:this.reactions.get(roomId+'|'+m.id)||m.reactions||[]})),{title:c.title||roomId,source:c.accountID||'matrix',kind:'chat',timestamp:c.lastActivity},options)}
  normalizeMessage(m){
   const room=this.chats.get(m.roomId),userId=m.sender?.userId||m.raw?.sender;const person=room?.participants?.items.find(p=>p.id===userId);const attachments=(m.attachments||[]).map(a=>{
    const id=a.contentUri||a.encryptedFile?.url;if(id&&a.encryptedFile)this.mediaFiles.set(id,a.encryptedFile);
@@ -93,7 +114,7 @@ export class MatrixProvider{
     const key=roomId+'|'+m.id,version=this.relationVersions.get(roomId+'|'+m.id)||0;
     try{const data=await this.raw('GET',`/_matrix/client/v1/rooms/${enc(roomId)}/relations/${enc(m.id)}/m.annotation/m.reaction`,undefined,{limit:'100'});if(version!==(this.relationVersions.get(key)||0))return;this.reactions.set(key,(data.chunk||[]).map(e=>({id:e.event_id,reactionKey:e.content?.['m.relates_to']?.key,participantID:e.sender})).filter(r=>r.reactionKey));this.relationCache.set(key,Date.now())}catch{}
    }));
-   this.scheduleSave();
+   this.retain(roomId,items);this.scheduleSave();
   })().finally(()=>{this.relationRefresh.delete(roomId)});
   this.relationRefresh.set(roomId,work);return work;
  }
@@ -111,6 +132,7 @@ export class MatrixProvider{
   this.refreshReactions(roomId,items).catch(e=>{this.error=e.message});
   const prior=this.timelines.get(roomId)||[];
   this.timelines.set(roomId,[...new Map([...prior,...items].map(m=>[m.id,m])).values()].sort((a,b)=>new Date(a.timestamp)-new Date(b.timestamp)));
+  this.retain(roomId,items);
   this.scheduleSave();
   return {items,hasMore:!!result.nextCursor,oldestCursor:result.nextCursor||null,newestCursor:null};
  }
@@ -171,8 +193,9 @@ export async function getMatrix({config,dataDir}){
   const store=await openMatrixStore(dataDir);
   await mkdir(path.join(dataDir,'matrix-crypto'),{recursive:true,mode:0o700});
   const client=createMatrixClient({account:config.matrixAccount,store,pickleKey:config.pickleKey,recoveryKey:config.recoveryKey,logger:(level,message)=>{if(level==='error')console.error('Matrix:',message)}});
-  const provider=new MatrixProvider(client,config.matrixAccount,{dataDir});await provider.start().catch(async e=>{await client.close().catch(()=>{});store.close();throw e});provider.store=store;instance=provider;return provider;
+  const archive=new ArchiveStore(path.join(dataDir,'archive.sqlite'),{namespace:accountNamespace(config)});
+  const provider=new MatrixProvider(client,config.matrixAccount,{dataDir,archive});await provider.start().catch(async e=>{await client.close().catch(()=>{});store.close();archive.close();throw e});provider.store=store;instance=provider;return provider;
  })().catch(e=>{boot=null;throw e});return boot;
 }
 export async function matrixRequest(context,endpoint,method,body){return (await getMatrix(context)).request(endpoint,method,body)}
-export async function closeMatrix(){const provider=instance||await boot?.catch(()=>null);if(!provider)return;clearTimeout(provider.flushTimer);if(provider.subscription)await provider.subscription.stop();await provider.client.close();clearTimeout(provider.flushTimer);await provider.save();provider.store?.close();instance=null;boot=null;}
+export async function closeMatrix(){const provider=instance||await boot?.catch(()=>null);if(!provider)return;clearTimeout(provider.flushTimer);if(provider.subscription)await provider.subscription.stop();await provider.client.close();clearTimeout(provider.flushTimer);await provider.save();provider.store?.close();provider.archive?.close();instance=null;boot=null;}

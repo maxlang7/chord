@@ -7,6 +7,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {mailAccounts,listMail,readMail,modifyMail,sendMail,mailAttachment,checkMail} from './mail-provider.mjs';
 import {ReadCache} from './read-cache.mjs';
+import {ArchiveService} from './archive-service.mjs';
 import {TimelineSeed} from './timeline-seed.mjs';
 import {Directory} from './directory.mjs';
 import {matrixAction,closeMatrixWorker} from './matrix-transport.mjs';
@@ -22,7 +23,9 @@ process.umask(0o077);await mkdir(dataDir,{recursive:true,mode:0o700});
 let config=await readFile(file,'utf8').then(JSON.parse).catch(()=>({apiKey:randomBytes(32).toString('base64url')}));
 if(!config.apiKey)config.apiKey=randomBytes(32).toString('base64url');await writeFile(file,JSON.stringify(config,null,2),{mode:0o600});
 const namespace=createHash('sha256').update(JSON.stringify([config.matrixAccount?.homeserver,config.matrixAccount?.userId,config.matrixAccount?.deviceId,(config.mailAccounts||[]).map(a=>[a.id,a.email])])).digest('hex');
-const readCache=new ReadCache(path.join(dataDir,'read-cache.sqlite'),{namespace});
+const archive=new ArchiveService(dataDir,config);
+const readCache=new ReadCache(path.join(dataDir,'read-cache.sqlite'),{namespace,archive:archive.store});
+archive.start();
 const timelineSeed=new TimelineSeed(dataDir);
 const directory=await Directory.open(dataDir,{blue:blueCached,config:()=>config});
 function queryKey(url){const q=new URLSearchParams(url.searchParams);q.delete('fresh');q.sort();return q.toString()}
@@ -32,8 +35,8 @@ async function seedInbox(url){
  const query=(url.searchParams.get('query')||'').toLowerCase(),unread=url.searchParams.get('unread')==='true',server=url.searchParams.get('server');
  if(source.startsWith('mail:')&&query)return undefined;
  await directory.refresh();
- const previous=readCache.db.prepare("SELECT value FROM cache WHERE namespace=? AND substr(key,1,6)='inbox:' ORDER BY updated").all(namespace);
- const known=new Map();for(const row of previous)for(const c of JSON.parse(row.value).items||[])known.set(c.id,c);
+ const previous=readCache.entries('inbox:');
+ const known=new Map();for(const row of previous)for(const c of row.value.items||[])known.set(c.id,c);
  for(const c of await timelineSeed.chats()){
   const id='matrix:'+c.id;
   if(!known.has(id))known.set(id,{...c,id,remoteId:c.id,kind:'chat',source:c.accountID,title:c.title,preview:c.preview?.text||'',unread:!!(c.unreadCount||c.isMarkedUnread),timestamp:c.lastActivity,direct:c.type==='single',participants:(c.participants?.items||[]).map(p=>p.id),canReply:!c.isReadOnly,canReact:!c.isReadOnly,canSend:!c.isReadOnly});
@@ -46,7 +49,13 @@ async function seedInbox(url){
 
 async function cachedMessages(id,url){
  const c=parseConversation(id),key='messages:'+id+':'+queryKey(url);
- return readCache.get(key,async()=>{await directory.refresh();const page=await conversation(id,url);page.items=await directory.enrichMessages(page.items||[],{source:c.kind==='mail'?'mail:'+c.account:c.kind==='blueferry'?'iphone':directory.catalog.rooms.get(c.remote)?.network});return page},{maxAge:c.kind==='mail'?15000:2000,fresh:url.searchParams.get('fresh')==='true',seed:!url.searchParams.has('cursor')?async()=>{const page=await timelineSeed.page(id);if(!page)return;page.items=await directory.enrichMessages(page.items,{source:timelineSeed.rooms.get(c.remote)?.accountID});return page}:undefined});
+ if(c.kind==='archive'){
+  let before=null;
+  if(url.searchParams.has('cursor')){try{before=JSON.parse(Buffer.from(url.searchParams.get('cursor'),'base64url').toString());if(!Number.isSafeInteger(before.at)||!Number.isSafeInteger(before.seq))throw new Error()}catch{throw Object.assign(new Error('Invalid archive cursor'),{status:400})}}
+  return archive.store.page(c.id,{before,around:before?null:c.anchor,version:before?null:c.version});
+ }
+ const context={conversationID:id};
+ return readCache.get(key,async()=>{await directory.refresh();const page=await conversation(id,url);page.items=await directory.enrichMessages(page.items||[],{source:c.kind==='mail'?'mail:'+c.account:c.kind==='blueferry'?'iphone':directory.catalog.rooms.get(c.remote)?.network});context.conversation=directory.conversations.get(id)||{source:c.kind==='mail'?'mail:'+c.account:c.kind==='blueferry'?'iphone':directory.catalog.rooms.get(c.remote)?.network};return page},{context,maxAge:c.kind==='mail'?15000:2000,fresh:url.searchParams.get('fresh')==='true',seed:!url.searchParams.has('cursor')?async()=>{const local=archive.store.page(id);if(local.items.length)return {...local,hasMore:false,oldestCursor:null};const page=await timelineSeed.page(id);if(!page)return;page.items=await directory.enrichMessages(page.items,{source:timelineSeed.rooms.get(c.remote)?.accountID});return page}:undefined});
 }
 const warmQueue=[],warmSeen=new Map();let warmActive=0;
 function warmConversations(items){
@@ -94,7 +103,7 @@ async function inbox(url){
  for(const a of mailAccounts())if(source==='all'||source==='mail:'+a.id)jobs.push((async()=>{try{const d=await listMail(a.id,{query:query||'in:inbox',cursor:source==='all'?undefined:cursor,limit:source==='all'?12:35});items.push(...d.items.map(m=>({...m,id:'mail:'+a.id+':'+m.id,remoteId:m.id,kind:'email',source:'mail:'+a.id,title:m.subject,preview:m.from+' · '+m.snippet,timestamp:m.date,canReply:true,canReact:false,canSend:true})));if(d.hasMore)cursors['mail:'+a.id]=d.oldestCursor}catch(e){errors.push({source:'mail:'+a.id,error:e?.message||String(e)})}})());
  await Promise.all(jobs);items=items.filter(c=>(!unread||c.unread)&&!c.isArchived);const server=url.searchParams.get('server');if(server&&!/^(all|dm|[0-9]+)$/.test(server))throw Object.assign(new Error('Invalid Discord server'),{status:400});let enriched=items.map(c=>directory.enrichConversation(c));if(server)enriched=enriched.filter(c=>c.source==='discord'&&(server==='all'||(server==='dm'?!c.serverID:c.serverID===server)));const ranked=rankInbox(enriched,directory.book,{view});await directory.book.save();return {...ranked,errors,cursors,hasMore:Object.keys(cursors).length>0};
 }
-function parseConversation(id){if(id.startsWith('matrix:'))return {kind:'matrix',remote:id.slice(7)};if(id.startsWith('blueferry:'))return {kind:'blueferry',remote:id.slice(10)};const m=id.match(/^mail:(home|cmu):(.+)$/);if(m)return {kind:'mail',account:m[1],remote:m[2]};throw Object.assign(new Error('Unknown conversation ID'),{status:400})}
+function parseConversation(id){if(id.startsWith('archive:'))return {kind:'archive',...archive.store.decodeToken(id)};if(id.startsWith('matrix:'))return {kind:'matrix',remote:id.slice(7)};if(id.startsWith('blueferry:'))return {kind:'blueferry',remote:id.slice(10)};const m=id.match(/^mail:(home|cmu):(.+)$/);if(m)return {kind:'mail',account:m[1],remote:m[2]};throw Object.assign(new Error('Unknown conversation ID'),{status:400})}
 async function conversation(id,url){const c=parseConversation(id);
  if(c.kind==='matrix')return matrix('/v1/chats/'+encodeURIComponent(c.remote)+'/messages'+(url.searchParams.has('cursor')?'?cursor='+encodeURIComponent(url.searchParams.get('cursor')):''));
  if(c.kind==='mail'){const d=await readMail(c.account,c.remote);return {...d,items:d.items.map(m=>({...m,chatID:id,senderName:m.from,timestamp:m.date,linkedMessageID:null,reactions:[]}))}}
@@ -111,7 +120,11 @@ export const server=http.createServer(async(req,res)=>{try{
  if(req.headers['x-chord-refresh']==='true')url.searchParams.set('fresh','true');
  if(req.method!=='GET'&&!p.endsWith('/attachment')&&!p.includes('/assets/'))res.once('finish',()=>{if(res.statusCode<400){readCache.invalidate('messages:');readCache.invalidate('inbox:');readCache.invalidate('contacts:')}});
  if(p==='/api/status')return json(res,{version:'0.3.0',independent:true,userID:config.matrixAccount?.userId||null,matrixConfigured:!!config.matrixAccount,homeserver:config.matrixAccount?.homeserver||null,transport:'Local Matrix bridges + direct BlueFerry + Gmail',networks:(config.bridges||[]).map(({id,name})=>({id,name})),mail:mailAccounts()});
- if(p==='/api/search'&&req.method==='GET'){await directory.refresh();return json(res,await searchMessages(url.searchParams.get('query')||'',{matrix,blue,mailAccounts,listMail,directory}))}
+ if(p==='/api/archive/status'&&req.method==='GET')return json(res,archive.status());
+ if((p==='/api/search'||p==='/api/archive/search')&&req.method==='GET'){
+  if(p==='/api/search'&&url.searchParams.get('remote')==='true'){await directory.refresh();return json(res,await searchMessages(url.searchParams.get('query')||'',{matrix,blue,mailAccounts,listMail,directory}))}
+  return json(res,archive.store.search(url.searchParams.get('query')||'',{limit:url.searchParams.get('limit')||60,offset:url.searchParams.get('offset')||0}));
+ }
  if(p==='/api/connections'&&req.method==='GET')return json(res,await connections(url.searchParams.get('refresh')==='true'));
  if(p==='/api/inbox'&&req.method==='GET')return json(res,await readCache.get('inbox:'+queryKey(url),async()=>{const page=await inbox(url);setImmediate(()=>warmConversations(page.items));return page},{maxAge:5000,fresh:url.searchParams.get('fresh')==='true',seed:()=>seedInbox(url)}));
  if(p==='/api/discord/servers'&&req.method==='GET'){await directory.refresh();const rooms=[...directory.catalog.rooms.values()].filter(r=>r.network==='discord');return json(res,{items:directory.catalog.servers.map(g=>({...g,channelCount:rooms.filter(r=>r.serverID===g.id).length})).sort((a,b)=>a.name.localeCompare(b.name)),directMessageCount:rooms.filter(r=>!r.serverID).length})}
@@ -126,15 +139,18 @@ export const server=http.createServer(async(req,res)=>{try{
 
  if(p.startsWith('/api/conversations/')){
   const match=p.match(/^\/api\/conversations\/([^/]+)\/(messages|details|attachment|send|archive|read|unread|reaction|edit)$/);if(!match)return json(res,{error:'Unknown conversation action'},404);const id=decodeURIComponent(match[1]),action=match[2],c=parseConversation(id);
+  if(c.kind==='archive'&&!['messages','details','attachment'].includes(action))return json(res,{error:'The local archive is read-only. Open the live conversation to make changes.'},422);
+  if(c.kind==='archive'&&action==='details')return json(res,{...archive.store.getConversation(c.id),localArchive:true,readOnly:true});
   if(action==='details'&&req.method==='GET'){if(c.kind==='matrix')return json(res,await matrix('/v1/chats/'+encodeURIComponent(c.remote)));if(c.kind==='blueferry')return json(res,{...(await conversation(id,url)).thread,status:await blue('GetStatus')});return json(res,{account:mailAccounts().find(a=>a.id===c.account),threadID:c.remote})}
   if(action==='messages'&&req.method==='GET')return json(res,await cachedMessages(id,url));
   const b=await input(req);if(action==='send'&&req.method==='POST')return json(res,await send(id,b));
   if(action==='attachment'&&req.method==='POST'){
+   if(c.kind==='archive'){const result=archive.store.attachment(c.id,b.messageID,b.index??0,b.attachmentID);return result?json(res,result):json(res,{error:'This attachment has not been downloaded locally.'},404)}
    if(c.kind==='blueferry')throw new Error('Bluetooth attachments are unavailable');
    if(typeof b.messageID!=='string'||!b.messageID)throw Object.assign(new Error('messageID is required'),{status:400});
-   if(c.kind==='mail')return json(res,await readCache.get('media:mail:'+id+':'+b.messageID+':'+b.attachmentID,()=>mailAttachment(c.account,b.messageID,b.attachmentID),{maxAge:30*86400000,kind:'media'}));
+   if(c.kind==='mail')return json(res,await readCache.get('media:mail:'+id+':'+b.messageID+':'+b.attachmentID,()=>mailAttachment(c.account,b.messageID,b.attachmentID),{maxAge:30*86400000,kind:'media',context:{conversationID:id,messageID:b.messageID}}));
    const index=b.index??0;if(!Number.isSafeInteger(index)||index<0)throw Object.assign(new Error('Attachment index must be a nonnegative integer'),{status:400});
-   return json(res,await readCache.get('media:attachment:'+id+':'+b.messageID+':'+index,()=>matrixAction({config,dataDir},'attachment',c.remote,b.messageID,index),{maxAge:30*86400000,kind:'media'}));
+   return json(res,await readCache.get('media:attachment:'+id+':'+b.messageID+':'+index,()=>matrixAction({config,dataDir},'attachment',c.remote,b.messageID,index),{maxAge:30*86400000,kind:'media',context:{conversationID:id,messageID:b.messageID}}));
   }
   if(['archive','read','unread'].includes(action)&&req.method==='POST'){
    if(c.kind==='mail')return json(res,await modifyMail(c.account,c.remote,action==='archive'?{archived:b.archived??true}:{read:action==='read'}));
@@ -161,4 +177,4 @@ export const server=http.createServer(async(req,res)=>{try{
  return json(res,{error:'Not found'},404);
  }catch(e){json(res,{error:e?.message||String(e)},e.status||500)}});
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))server.listen(port,'127.0.0.1',()=>console.log('Chord API on http://127.0.0.1:'+port));
-if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))for(const signal of ['SIGINT','SIGTERM'])process.once(signal,async()=>{setTimeout(()=>process.exit(0),3000).unref();try{await closeMatrixWorker()}finally{server.close(()=>process.exit(0))}});
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))for(const signal of ['SIGINT','SIGTERM'])process.once(signal,async()=>{setTimeout(()=>process.exit(0),3000).unref();try{await closeMatrixWorker();await archive.close();await readCache.idle();readCache.close()}finally{server.close(()=>process.exit(0))}});

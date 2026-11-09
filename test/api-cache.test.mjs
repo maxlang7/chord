@@ -38,4 +38,15 @@ test('HTTP cache survives restart, serves reads during a stalled refresh, and in
  blocked=false;release();await refresh;
  await api('/api/conversations/'+encodeURIComponent('matrix:!test')+'/send',{text:'Synthetic local send'});
  assert.equal((await api(route+'?fresh=true')).items[0].text,'After send');
+ // The old version remains searchable offline and opens its exact saved text.
+ offline=true;
+ const results=await api('/api/archive/search?query=First%20version');assert.equal(results.items.length,1);
+ const archived='/api/conversations/'+encodeURIComponent(results.items[0].conversation.id);
+ const page=await api(archived+'/messages');assert.equal(page.items[0].text,'First version');assert.equal(page.items[0].historicalVersion,true);
+ for(const action of ['send','read','unread','edit','reaction','archive']){
+  const r=await fetch('http://127.0.0.1:'+port+archived+'/'+action,{method:'POST',headers:{Authorization:'Bearer '+config.apiKey,'Content-Type':'application/json'},body:'{}'});
+  assert.equal(r.status,422);assert.match((await r.json()).error,/read-only/);
+ }
+ assert.equal((await api('/api/archive/status')).retention,'indefinite');
+ await stop(child);await start();assert.equal((await api('/api/search?query=First%20version')).items.length,1);
 });

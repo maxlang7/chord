@@ -74,7 +74,7 @@
     },
     "/api/search": {
       "get": {
-        "summary": "Search synced chats, cached phone messages and Gmail using query",
+        "summary": "Search every locally retained message and filename, including compressed archives; optional remote=true searches providers",
         "responses": {
           "200": {
             "description": "JSON result"
@@ -642,6 +642,26 @@
                 "type": "object"
               }
             }
+          }
+        }
+      }
+    },
+    "/api/archive/search": {
+      "get": {
+        "summary": "Offline full-text search of retained messages and filenames; query, limit (1-200), offset",
+        "responses": {
+          "200": {
+            "description": "Read-only archive conversations, matching saved versions, pagination, and local coverage"
+          }
+        }
+      }
+    },
+    "/api/archive/status": {
+      "get": {
+        "summary": "Indefinite retention, 30-day compression policy, migration progress, stored bytes and counts",
+        "responses": {
+          "200": {
+            "description": "Local archive status"
           }
         }
       }

@@ -1,12 +1,11 @@
-import {readFile} from 'node:fs/promises';
-import path from 'node:path';
+import {readHistory} from './history-file.mjs';
 // Read saved SDK history on the HTTP thread without waiting for crypto boot.
 // A new API cache can therefore display existing conversations on first use.
 export class TimelineSeed {
- constructor(dataDir){this.file=path.join(dataDir,'matrix-timeline.json');this.loaded=0;this.rooms=new Map();this.messages=new Map();this.reactions=new Map()}
+ constructor(dataDir){this.dataDir=dataDir;this.loaded=0;this.rooms=new Map();this.messages=new Map();this.reactions=new Map()}
  async load(){
   if(this.loaded)return;
-  if(!this.loading)this.loading=(async()=>{try{const d=JSON.parse(await readFile(this.file,'utf8'));this.rooms=new Map(d.chats||[]);this.messages=new Map(d.timelines||[]);this.reactions=new Map(d.reactions||[])}catch{}this.loaded=Date.now()})().finally(()=>{this.loading=null});
+  if(!this.loading)this.loading=(async()=>{try{const d=await readHistory(this.dataDir);this.rooms=new Map(d.chats||[]);this.messages=new Map(d.timelines||[]);this.reactions=new Map(d.reactions||[])}catch{}this.loaded=Date.now()})().finally(()=>{this.loading=null});
   await this.loading;
  }
  async page(id){
