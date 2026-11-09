@@ -106,7 +106,7 @@ pub fn time_label(stamp: &str) -> String {
     };
     let d = d.with_timezone(&chrono::Local);
     if d.date_naive() == chrono::Local::now().date_naive() {
-        d.format("%H:%M").to_string()
+        d.format("%-I:%M %p").to_string()
     } else {
         d.format("%b %d").to_string()
     }

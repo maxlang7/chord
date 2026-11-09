@@ -111,7 +111,7 @@ pub fn render(frame: &mut Frame, app: &App) {
             Span::styled("● ", Style::new().fg(t.green)),
             Span::styled(health, Style::new().fg(t.muted)),
             Span::styled(
-                format!("   {}", chrono::Local::now().format("%a %H:%M")),
+                format!("   {}", chrono::Local::now().format("%a %-I:%M %p")),
                 Style::new().fg(t.faint),
             ),
         ]))
