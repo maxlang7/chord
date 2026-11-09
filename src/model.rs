@@ -29,6 +29,7 @@ pub struct Conversation {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Message {
+    pub historical_version: bool,
     pub id: String,
     pub text: String,
     pub sender_name: String,

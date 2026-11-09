@@ -23,9 +23,16 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             "search_messages",
-            "Search synced chat history, cached iPhone messages, and both Gmail accounts. Results identify the source conversation. Search does not mark messages read.",
+            "Search all locally retained chat, iPhone, and email messages and attachment filenames, including compressed archives. Works offline. Results open a read-only saved conversation.",
             json!({"query":{"type":"string"}}),
             vec!["query"],
+            true,
+        ),
+        tool(
+            "archive_status",
+            "Inspect local retention, migration, compression, message and saved file counts. Content is retained indefinitely and compressed after 30 days.",
+            json!({}),
+            vec![],
             true,
         ),
         tool(
@@ -220,6 +227,7 @@ async fn call(api: &Api, name: &str, mut args: Value) -> Result<Value> {
     let get = match name {
         "status" => Some("/api/status"),
         "connection_status" => Some("/api/connections"),
+        "archive_status" => Some("/api/archive/status"),
         "list_accounts" => Some("/api/bridges"),
         "list_discord_servers" => Some("/api/discord/servers"),
         "iphone_status" => Some("/api/blueferry/status"),

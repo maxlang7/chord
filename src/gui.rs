@@ -260,6 +260,9 @@ impl Gui {
             });
     }
     fn run_search(&mut self, ctx: &egui::Context) {
+        self.search_page(ctx, false);
+    }
+    fn search_page(&mut self, ctx: &egui::Context, more: bool) {
         self.search_seq += 1;
         let seq = self.search_seq;
         if self.search.trim().is_empty() {
@@ -271,11 +274,38 @@ impl Gui {
             return;
         };
         self.search_busy = true;
-        let route = format!("/api/search?query={}", urlencoding::encode(&self.search));
+        let offset = if more {
+            self.search_results["nextOffset"].as_u64().unwrap_or(0)
+        } else {
+            0
+        };
+        let previous = if more {
+            self.search_results["items"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            vec![]
+        };
+        let route = format!(
+            "/api/search?query={}&offset={offset}",
+            urlencoding::encode(&self.search)
+        );
         let tx = self.media.tx.clone();
         let ctx = ctx.clone();
         tokio::spawn(async move {
-            let result = api.get(&route).await.map_err(|e| format!("{e:#}"));
+            let result = api
+                .get(&route)
+                .await
+                .map(|mut v| {
+                    if more {
+                        let mut items = previous;
+                        items.extend(v["items"].as_array().cloned().unwrap_or_default());
+                        v["items"] = json!(items);
+                    }
+                    v
+                })
+                .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Event::Search(seq, result));
             ctx.request_repaint();
         });
@@ -330,19 +360,21 @@ impl Gui {
                 }
                 if self.message_search {
                     if self.search_busy { ui.spinner(); }
-                    ui.add(egui::Label::new(RichText::new("Synced chat history, cached iPhone messages, and Gmail. Ctrl+K to search.").small().color(p.muted)).wrap());
+                    ui.add(egui::Label::new(RichText::new("Search all saved messages and filenames, including compressed archives. Works offline.").small().color(p.muted)).wrap());
                     let hits = self.search_results["items"].as_array().cloned().unwrap_or_default();
                     egui::ScrollArea::vertical().id_salt("search-results").show(ui, |ui| {
                         if hits.is_empty() && !self.search_busy { ui.label("No results. Enter text and press Search."); }
                         for hit in hits {
                             let Ok(chat) = serde_json::from_value::<Conversation>(hit["conversation"].clone()) else { continue; };
                             let text = hit["message"]["text"].as_str().unwrap_or("");
-                            let label = format!("{} · {}\n{}", chat.title, source_label(&chat.source), one_line(text).chars().take(130).collect::<String>());
+                            let saved = if hit["archived"] == true { " · archive" } else { " · saved locally" };
+                            let label = format!("{} · {}{}\n{}", chat.title, source_label(&chat.source), saved, one_line(text).chars().take(130).collect::<String>());
                             if ui.add_sized([ui.available_width(), 72.], egui::Button::new(label).wrap()).clicked() {
                                 self.choose_chat(chat);
                                 self.scroll_to = hit["message"]["id"].as_str().filter(|s| !s.is_empty()).map(str::to_owned);
                             }
                         }
+                        if self.search_results["hasMore"] == true && !self.search_busy && ui.button("More results").clicked() { self.search_page(ctx, true); }
                     });
                     for error in self.search_results["errors"].as_array().into_iter().flatten() { ui.label(RichText::new(format!("{}: {}", error["source"].as_str().unwrap_or("Account"), error["error"].as_str().unwrap_or("Unavailable"))).small().color(p.muted)); }
                     return;
@@ -561,10 +593,21 @@ impl Gui {
                             .as_deref()
                             .map(|s| format!("{} · {s}", source_label(&chat.source)))
                             .unwrap_or_else(|| source_label(&chat.source).into());
+                        let subtitle = if chat.kind == "archive" {
+                            format!("{subtitle} · Local archive · Read only")
+                        } else {
+                            subtitle
+                        };
                         ui.label(RichText::new(subtitle).size(12.).color(p.muted));
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.menu_button("•••", |ui| {
+                            if chat.kind == "archive" {
+                                ui.label(
+                                    "Saved locally. Open the live conversation to make changes.",
+                                );
+                                return;
+                            }
                             if ui.button("Mark read").clicked() {
                                 self.app.operation(
                                     "Marked read",
@@ -713,6 +756,9 @@ impl Gui {
                                     .size(11.)
                                     .color(p.muted),
                             );
+                            if m.historical_version {
+                                ui.label(RichText::new("Saved version").small().color(p.muted));
+                            }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -1054,6 +1100,8 @@ impl Gui {
                     egui::TextEdit::multiline(&mut self.app.editor.text)
                         .hint_text(if enabled {
                             "Write a message…"
+                        } else if chat.kind == "archive" {
+                            "Local archive is read only"
                         } else {
                             "Sending is unavailable for this conversation"
                         })
