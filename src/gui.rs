@@ -153,11 +153,6 @@ impl Gui {
                     (5, "Personal email", "@"),
                     (6, "CMU email", "CMU"),
                 ] {
-                    let connection_id = crate::model::SOURCES[index].0;
-                    let connected = self.app.connections["items"]
-                        .as_array()
-                        .and_then(|v| v.iter().find(|c| c["id"] == connection_id))
-                        .and_then(|c| c["connected"].as_bool());
                     let title = if compact { short } else { label };
                     let selected = self.app.source == index;
                     let button = egui::Button::new(RichText::new(title).color(if selected {
@@ -173,19 +168,6 @@ impl Gui {
                     .corner_radius(9)
                     .min_size(egui::vec2(ui.available_width(), 38.));
                     let response = ui.add(button).on_hover_text(label);
-                    if let Some(online) = connected {
-                        let center =
-                            egui::pos2(response.rect.right() - 8., response.rect.center().y);
-                        if online {
-                            ui.painter().circle_filled(center, 3., p.accent);
-                        } else {
-                            ui.painter().circle_stroke(
-                                center,
-                                3.,
-                                egui::Stroke::new(1.0_f32, p.muted),
-                            );
-                        }
-                    }
                     if response.clicked() {
                         if index == 2 {
                             self.app.open_servers();
