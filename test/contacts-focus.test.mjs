@@ -78,3 +78,16 @@ test('quiet and pin overrides persist, All still contains every conversation',as
  await book.setPreference('chat:one',{priority:'auto'});
  assert.equal(rankInbox(conversations,book,{view:'focus',now}).items.length,2);
 });
+test('direct conversations choose the other person for photos, excluding bridge bots and self',()=>{
+ const book=memoryBook();
+ const bot=book.observe({key:'@slackbot:chord.local',name:'Chord Slack'});
+ const jiao=book.observe({key:'@slack_team-jiao:chord.local',name:'Jiao Deng',source:'slack'});
+ const me=book.observe({key:'@max:chord.local',name:'Max'});
+ const other=book.observe({key:'@slack_team-other:chord.local',name:'Other participant',source:'slack'});
+ const directory=new Directory(book,{blue:async()=>[],config:()=>({})});
+ directory.catalog.selfIds=new Set(['@max:chord.local']);
+ directory.catalog.rooms.set('!dm',{network:'slack',direct:true,otherUser:'@slack_team-jiao:chord.local'});
+ const conversation=directory.enrichConversation({id:'matrix:!dm',remoteId:'!dm',kind:'chat',source:'slack',participants:['@slackbot:chord.local','@max:chord.local','@slack_team-other:chord.local','@slack_team-jiao:chord.local']});
+ assert.equal(conversation.title,'Jiao Deng');assert.equal(conversation.contactIDs[0],jiao.id);
+ assert.equal(conversation.contactIDs.includes(bot.id),false);assert.equal(conversation.contactIDs.includes(me.id),false);assert.equal(conversation.contactIDs.includes(other.id),true);
+});

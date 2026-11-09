@@ -22,7 +22,7 @@ export class Directory{
  enrichConversation(c){
   const room=this.catalog.rooms.get(c.remoteId);
   const self=this.catalog.selfIds;
-  const keys=[...(c.participants||[]),...(room?.otherUser?[room.otherUser]:[])].filter(k=>!self.has(k));
+  const keys=[...(room?.otherUser?[room.otherUser]:[]),...(c.participants||[])].filter(k=>!self.has(k)&&!/^@(slack|discord|whatsapp)bot:chord\.local$/.test(k));
   if(c.kind==='phone')keys.push(...(c.participants||[]).map(phoneIdentity).filter(Boolean));
   if(c.kind==='email'){
    const p=this.observeMail(c.from||'');if(p)keys.push(p.identities.find(i=>i.source==='email')?.key);
