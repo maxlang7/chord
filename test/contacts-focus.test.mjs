@@ -91,3 +91,14 @@ test('direct conversations choose the other person for photos, excluding bridge 
  assert.equal(conversation.title,'Jiao Deng');assert.equal(conversation.contactIDs[0],jiao.id);
  assert.equal(conversation.contactIDs.includes(bot.id),false);assert.equal(conversation.contactIDs.includes(me.id),false);assert.equal(conversation.contactIDs.includes(other.id),true);
 });
+test('every inbox view sorts by recency, even when an older item has a higher importance score',()=>{
+ const book=memoryBook();book.data.conversations.old={priority:'important'};
+ const items=[{id:'old',timestamp:'2026-10-01T00:00:00Z'},{id:'new',timestamp:'2026-11-09T00:00:00Z',attention:{important:true,reason:'Selected channel'}},{id:'invalid',timestamp:'invalid',attention:{important:true,reason:'Selected channel'}}];
+ for(const view of ['all','focus'])assert.deepEqual(rankInbox(items,book,{view}).items.map(c=>c.id),['new','old','invalid']);
+});
+test('older bridge activity cannot push a newly active conversation back into October',()=>{
+ const book=memoryBook(),directory=new Directory(book,{blue:async()=>[],config:()=>({})});
+ directory.catalog.rooms.set('!room',{activity:{lastMessageAt:Date.parse('2026-10-01T00:00:00Z')}});
+ const c=directory.enrichConversation({id:'matrix:!room',remoteId:'!room',participants:[],timestamp:'2026-11-09T00:00:00Z'});
+ assert.equal(c.timestamp,'2026-11-09T00:00:00.000Z');
+});

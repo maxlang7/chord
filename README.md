@@ -157,7 +157,8 @@ Local coverage expands as history syncs or is fetched. Gmail syntax remains avai
 in Conversations and the mail search API. `/api/search?remote=true&query=...` explicitly
 searches providers using the original unified search.
 
-Focus ranks recent direct conversations, personal unread messages, mentions and
+All inbox views sort by newest activity first. Focus includes recent direct
+conversations, personal unread messages, mentions and
 replies, conversations you have participated in, favorite contacts, and important
 email. Rows explain their importance. All remains available. Search includes
 conversations hidden by Focus. Local importance rules do not change source

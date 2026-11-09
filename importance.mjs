@@ -1,7 +1,7 @@
 const DAY=86400000;
 export function importance(conversation,{preference={},favorite=false,now=Date.now()}={}){
  const c=conversation,signals=c.signals||{},activity=c.activity||{};
- const stamp=Number(activity.lastMessageAt)||Date.parse(c.timestamp)||0,age=(now-stamp)/DAY;
+ const stamp=Math.max(Number(activity.lastMessageAt)||0,Date.parse(c.timestamp)||0),age=(now-stamp)/DAY;
  const reasons=[];let score=0;
  const add=(points,reason)=>{score+=points;reasons.push(reason)};
  if(c.attention)return {important:c.attention.important,score:c.attention.important?100:0,reasons:[c.attention.reason],rule:'attention'};
@@ -34,6 +34,7 @@ export function rankInbox(items,book,{view='all',now=Date.now()}={}){
  });
  const focused=ranked.filter(c=>c.importance.important);
  const visible=view==='focus'?focused:ranked;
- visible.sort((a,b)=>(view==='focus'?b.importance.score-a.importance.score:0)||Date.parse(b.timestamp||0)-Date.parse(a.timestamp||0));
+ const timestamp=c=>{const value=Date.parse(c.timestamp);return Number.isFinite(value)?value:0};
+ visible.sort((a,b)=>timestamp(b)-timestamp(a));
  return {items:visible,summary:{total:ranked.length,important:focused.length,hidden:view==='focus'?ranked.length-focused.length:0},view};
 }
