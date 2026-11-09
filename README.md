@@ -64,6 +64,11 @@ excludes database indexes and recovery copies.
   verified complete recipient roster. Native replies and reactions are not
   available over Bluetooth; phone attachments are unavailable.
 
+BlueFerry connection state appears as a small connected/disconnected label in the
+sidebar, with more detail under Accounts. Bridge-control and connection-status
+conversations are excluded from the inbox and unread counts; their retained history
+is preserved. Real iPhone conversations remain available even while disconnected.
+
 A configured bridge and an authenticated network session are different states.
 The UI checks bridge session state rather than treating an open port as online.
 

@@ -216,6 +216,48 @@ impl Gui {
                     {
                         self.app.load_accounts();
                     }
+                    let phone = self.app.connections["items"]
+                        .as_array()
+                        .and_then(|items| items.iter().find(|a| a["id"] == "iphone"));
+                    let (label, color) = match phone {
+                        Some(state) if state["connected"] == true => (
+                            if compact {
+                                "BT on"
+                            } else {
+                                "BlueFerry connected"
+                            },
+                            p.accent,
+                        ),
+                        Some(_) => (
+                            if compact {
+                                "BT off"
+                            } else {
+                                "BlueFerry disconnected"
+                            },
+                            p.muted,
+                        ),
+                        None => (
+                            if compact {
+                                "BT…"
+                            } else {
+                                "Checking BlueFerry…"
+                            },
+                            p.muted,
+                        ),
+                    };
+                    let detail = phone
+                        .and_then(|a| a["detail"].as_str())
+                        .unwrap_or("iPhone Bluetooth message connection");
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new(label).size(11.).color(color))
+                                .frame(false),
+                        )
+                        .on_hover_text(detail)
+                        .clicked()
+                    {
+                        self.app.load_accounts();
+                    }
                     let old = self.theme;
                     egui::ComboBox::from_id_salt("theme")
                         .selected_text(if compact { "Theme" } else { self.theme.name() })

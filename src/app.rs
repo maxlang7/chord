@@ -1293,7 +1293,7 @@ impl App {
                 }
             }
         }
-        if !self.demo && self.last_connection_refresh.elapsed().as_secs() >= 60 {
+        if !self.demo && self.last_connection_refresh.elapsed().as_secs() >= 30 {
             self.load_connections();
         }
         if !self.demo
