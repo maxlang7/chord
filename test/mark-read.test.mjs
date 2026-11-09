@@ -20,3 +20,13 @@ test('a read watermark survives stale server counts and permits future unread me
  timestamp=3000;
  await p.refreshRoomsNow();assert.equal(p.chats.get('!room').unreadCount,3);
 });
+test('old highlighted pings do not turn a later ordinary message into a new ping',async()=>{
+ const p=new MatrixProvider({}, {userId:'@me'},{save:false});
+ p.chats.set('!room',{id:'!room',localReadAt:2000,readHighlightBaseline:2});
+ let highlights=2;
+ p.raw=async()=>({rooms:{join:{'!room':{timeline:{events:[{origin_server_ts:3000}]},unread_notifications:{notification_count:4,highlight_count:highlights}}}}});
+ await p.refreshRoomsNow();assert.equal(p.chats.get('!room').highlightCount,0);
+ highlights=3;await p.refreshRoomsNow();assert.equal(p.chats.get('!room').highlightCount,1);
+ highlights=0;await p.refreshRoomsNow();assert.equal(p.chats.get('!room').readHighlightBaseline,0);
+ highlights=1;await p.refreshRoomsNow();assert.equal(p.chats.get('!room').highlightCount,1);
+});
