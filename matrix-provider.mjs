@@ -47,7 +47,7 @@ export class MatrixProvider{
    const bridge=find('m.bridge')||find('uk.half-shot.bridge');let accountID=bridge?.protocol?.id||'matrix';accountID=/slack/i.test(accountID)?'slack':/discord/i.test(accountID)?'discord':/whatsapp/i.test(accountID)?'whatsapp':accountID;
    const people=state.filter(e=>e.type==='m.room.member'&&e.content?.membership==='join').map(e=>({id:e.state_key,fullName:e.content.displayname||e.state_key,isSelf:e.state_key===this.account.userId}));
    const old=this.chats.get(roomId)||{};const prefs=room.account_data?.events?.find(e=>e.type==='org.chord.chat')?.content||{};const marked=room.account_data?.events?.find(e=>e.type==='m.marked_unread')?.content?.unread;
-   const latest=room.timeline?.events?.filter(e=>e.type==='m.room.message'||e.type==='m.room.encrypted').sort((a,b)=>a.origin_server_ts-b.origin_server_ts).at(-1);const title=find('m.room.name')?.name||bridge?.channel?.displayname||people.filter(p=>!p.isSelf).map(p=>p.fullName).slice(0,3).join(', ')||roomId;
+   const latest=room.timeline?.events?.at(-1);const title=find('m.room.name')?.name||bridge?.channel?.displayname||people.filter(p=>!p.isSelf).map(p=>p.fullName).slice(0,3).join(', ')||roomId;
    const locallyRead=old.localReadAt&&Number(latest?.origin_server_ts||Date.parse(old.lastActivity)||0)<=old.localReadAt;
    const rawHighlights=room.unread_notifications?.highlight_count||0;
    const readHighlightBaseline=old.localReadAt?Math.min(old.readHighlightBaseline??rawHighlights,rawHighlights):0;
