@@ -22,3 +22,12 @@ test('confirmed reactions update immediately and a stale recovery cannot undo th
  await p.request('/v1/chats/'+encodeURIComponent('!room')+'/messages/'+encodeURIComponent('$message')+'/reactions/'+encodeURIComponent('👍'),'DELETE');
  assert.equal(p.reactions.get('!room|$message').length,0);
 });
+test('conversation activity follows its newest message despite an older room snapshot',async()=>{
+ const p=new MatrixProvider({}, {userId:'@me:chord.local'}, {save:false});
+ p.lastRoomRefresh=Date.now();
+ p.chats.set('!room',{id:'!room',accountID:'discord',title:'Important',lastActivity:'2026-11-09T16:56:48Z'});
+ p.timelines.set('!room',[{id:'$new',timestamp:'2026-11-10T01:51:07Z',text:'New message'}]);
+ const result=await p.request('/v1/chats');
+ assert.equal(result.items[0].lastActivity,'2026-11-10T01:51:07.000Z');
+ assert.equal(result.items[0].preview.text,'New message');
+});
