@@ -73,15 +73,24 @@ def start(kind, command):
     raise RuntimeError(f'Chord {kind} is still starting. See private/desktop-{kind}.log.')
 
 
-def start_backend():
+def start_backend(supervise=False):
     with (PRIVATE / 'desktop-start.lock').open('a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
-        start('runtime', ['/run/current-system/sw/bin/nix-shell', str(ROOT / 'runtime.nix'),
-                          '--run', 'exec node scripts/runtime.mjs'])
-        start('api', ['node', str(ROOT / 'server.mjs')])
+        while True:
+            try:
+                start('runtime', ['/run/current-system/sw/bin/nix-shell', str(ROOT / 'runtime.nix'),
+                                  '--run', 'exec node scripts/runtime.mjs'])
+                start('api', ['node', str(ROOT / 'server.mjs')])
+            except (OSError, ValueError, RuntimeError) as error:
+                if not supervise:
+                    raise
+                print(f'Chord backend recovery: {error}', file=sys.stderr, flush=True)
+            if not supervise:
+                return
+            time.sleep(10)
 
 
 def focus_window():
@@ -100,7 +109,7 @@ def main():
     PRIVATE.mkdir(mode=0o700, exist_ok=True)
     os.chdir(ROOT)
     if '--backend-only' in sys.argv:
-        start_backend()
+        start_backend(supervise=True)
         return
     # Keep one client per desktop session, including during slow cold starts.
     client_lock = (PRIVATE / 'desktop-window.lock').open('a')
@@ -111,11 +120,11 @@ def main():
         return
     if not (PRIVATE / 'config.json').is_file():
         start_backend()
-    if not healthy('runtime') or not healthy('api'):
-        with (PRIVATE / 'desktop-client.log').open('ab') as log:
-            subprocess.Popen([sys.executable, __file__, '--backend-only'], cwd=ROOT,
-                             stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                             start_new_session=True)
+    # The nonblocking backend lock keeps one recovery loop across launches.
+    with (PRIVATE / 'desktop-client.log').open('ab') as log:
+        subprocess.Popen([sys.executable, __file__, '--backend-only'], cwd=ROOT,
+                         stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                         start_new_session=True)
     binary = ROOT / 'target/release/chord'
     if not binary.is_file():
         binary = ROOT / 'target/debug/chord'

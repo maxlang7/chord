@@ -25,4 +25,5 @@ jobs:
           cache: npm
       - run: npm ci
       - run: node --test test/*.test.mjs
+      - run: python3 scripts/test_launcher.py
       - run: node --check server.mjs
