@@ -720,16 +720,9 @@ impl Gui {
                         }
                         let messages = self.app.messages.clone();
                         let mut previous_day = String::new();
-                        for (index, message) in messages.iter().enumerate() {
-                            if chat.source == "slack"
-                                && chat.thread_root_id.is_none()
-                                && message
-                                    .thread_root_id
-                                    .as_ref()
-                                    .is_some_and(|root| messages.iter().any(|m| &m.id == root))
-                            {
-                                continue;
-                            }
+                        let group_threads = chat.source == "slack" && chat.thread_root_id.is_none();
+                        for index in message_order(&messages, group_threads) {
+                            let message = &messages[index];
                             let day = day_label(&message.timestamp);
                             if day != previous_day {
                                 previous_day = day.clone();
@@ -741,7 +734,30 @@ impl Gui {
                                 });
                                 ui.add_space(8.);
                             }
-                            self.message(ui, &chat, message, index, p);
+                            if message.thread_root_id.is_some() {
+                                let reply = egui::Frame::new()
+                                    .inner_margin(egui::Margin {
+                                        left: 16,
+                                        ..Default::default()
+                                    })
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        self.message(ui, &chat, message, index, p);
+                                    });
+                                let x = reply.response.rect.left() + 5.;
+                                ui.painter().line_segment(
+                                    [
+                                        egui::pos2(x, reply.response.rect.top()),
+                                        egui::pos2(x, reply.response.rect.bottom()),
+                                    ],
+                                    egui::Stroke::new(
+                                        1.5_f32,
+                                        Color32::from_gray(128).gamma_multiply(0.55),
+                                    ),
+                                );
+                            } else {
+                                self.message(ui, &chat, message, index, p);
+                            }
                             ui.add_space(9.);
                         }
                         if messages.is_empty() && !self.app.message_loading {
@@ -802,6 +818,14 @@ impl Gui {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     ui.menu_button("•••", |ui| {
+                                        if chat.source == "slack"
+                                            && chat.kind == "chat"
+                                            && chat.thread_root_id.is_none()
+                                            && ui.button("View full thread").clicked()
+                                        {
+                                            self.app.open_thread(m);
+                                            ui.close();
+                                        }
                                         if ui.button("Copy message").clicked() {
                                             ui.ctx().copy_text(m.text.clone());
                                             ui.close();
@@ -847,20 +871,9 @@ impl Gui {
                                 },
                             );
                         });
-                        if chat.source == "slack"
-                            && chat.kind == "chat"
-                            && chat.thread_root_id.is_none()
-                            && ui
-                                .button(if m.reply_count > 0 {
-                                    format!("Thread · {}+ replies", m.reply_count)
-                                } else {
-                                    "Open thread".into()
-                                })
-                                .clicked()
+                        if let Some(reply_id) = &m.linked_message_id
+                            && m.thread_root_id.as_ref() != Some(reply_id)
                         {
-                            self.app.open_thread(m);
-                        }
-                        if let Some(reply_id) = &m.linked_message_id {
                             let reply = self
                                 .app
                                 .messages
@@ -1970,6 +1983,39 @@ impl eframe::App for Gui {
         ctx.request_repaint_after(Duration::from_millis(250));
     }
 }
+// Keep loaded Slack replies beside their parent while retaining their original
+// indices for reply, reaction, and edit actions. Orphan replies remain visible.
+fn message_order(messages: &[Message], group_threads: bool) -> Vec<usize> {
+    if !group_threads {
+        return (0..messages.len()).collect();
+    }
+    let ids: std::collections::BTreeSet<_> = messages.iter().map(|m| m.id.as_str()).collect();
+    let mut replies: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (index, message) in messages.iter().enumerate() {
+        if let Some(root) = message.thread_root_id.as_deref()
+            && root != message.id
+            && ids.contains(root)
+        {
+            replies.entry(root).or_default().push(index);
+        }
+    }
+    let mut order = Vec::with_capacity(messages.len());
+    for (index, message) in messages.iter().enumerate() {
+        if message
+            .thread_root_id
+            .as_deref()
+            .is_some_and(|root| root != message.id && ids.contains(root))
+        {
+            continue;
+        }
+        order.push(index);
+        if let Some(children) = replies.get(message.id.as_str()) {
+            order.extend(children);
+        }
+    }
+    order
+}
+
 fn message_links(text: &str) -> Vec<String> {
     let mut links = vec![];
     for word in text.split_whitespace() {
@@ -2024,6 +2070,23 @@ pub fn run(app: App) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inline_threads_keep_replies_with_parent_and_preserve_action_indices() {
+        let message = |id: &str, root: Option<&str>| Message {
+            id: id.into(),
+            thread_root_id: root.map(str::to_owned),
+            ..Default::default()
+        };
+        let messages = vec![
+            message("parent", None),
+            message("other", None),
+            message("reply", Some("parent")),
+            message("orphan", Some("unloaded")),
+            message("second-reply", Some("parent")),
+        ];
+        assert_eq!(message_order(&messages, true), vec![0, 2, 4, 1, 3]);
+        assert_eq!(message_order(&messages, false), vec![0, 1, 2, 3, 4]);
+    }
     #[test]
     fn external_links_only_accept_web_urls_and_deduplicate() {
         assert_eq!(
@@ -2114,6 +2177,8 @@ mod tests {
         for size in [[1240., 820.], [800., 600.]] {
             let ctx = egui::Context::default();
             let mut gui = Gui::new(App::new(None, true), &ctx);
+            gui.app.active.as_mut().unwrap().source = "slack".into();
+            gui.app.messages[1].thread_root_id = Some(gui.app.messages[0].id.clone());
             let output = ctx.run(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
