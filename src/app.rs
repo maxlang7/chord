@@ -109,6 +109,7 @@ pub enum Response {
     Image(String, Result<crate::images::Decoded, String>),
     Inbox(u64, Result<Value, String>, bool),
     Messages(String, u64, Result<Value, String>, bool, bool),
+    InlineThread(String, Result<Value, String>),
     Operation(String, Result<Value, String>),
     ReadState(String, bool, Result<Value, String>),
     Sent(String, Result<Value, String>),
@@ -694,6 +695,22 @@ impl App {
         chat.parent_conversation_id = Some(parent);
         self.open(chat);
     }
+    pub fn load_inline_thread(&self, root: &str) {
+        let Some(chat) = self.active.clone() else {
+            return;
+        };
+        let Some(api) = self.api.clone() else { return };
+        let id = format!(
+            "matrix-thread:{}:{}",
+            urlencoding::encode(&chat.remote_id),
+            urlencoding::encode(root)
+        );
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let response = api.fresh().messages(&id, None).await;
+            let _ = tx.send(Response::InlineThread(chat.id, result(response)));
+        });
+    }
     pub fn back_to_channel(&mut self) {
         let Some(mut chat) = self.active.clone() else {
             return;
@@ -832,6 +849,9 @@ impl App {
         }
         .into();
         self.mode = Mode::Confirm;
+        if self.native_ui {
+            self.confirm();
+        }
     }
     pub fn confirm(&mut self) {
         if self.send_busy {
@@ -1209,6 +1229,33 @@ impl App {
                             }
                         }
                         Err(e) => self.notice = e,
+                    }
+                }
+                Response::InlineThread(id, response) => {
+                    if self.active.as_ref().map(|c| &c.id) != Some(&id) {
+                        continue;
+                    }
+                    match response {
+                        Ok(value) => {
+                            match serde_json::from_value::<Vec<Message>>(value["items"].clone()) {
+                                Ok(mut replies) => {
+                                    let selected = self.selected_message().map(|m| m.id);
+                                    replies.extend(self.messages.clone());
+                                    let mut seen = std::collections::HashSet::new();
+                                    replies.retain(|m| seen.insert(m.id.clone()));
+                                    replies.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+                                    self.messages = replies;
+                                    if let Some(index) = selected.and_then(|id| {
+                                        self.messages.iter().position(|m| m.id == id)
+                                    }) {
+                                        self.message_selection = index;
+                                    }
+                                    self.remember_messages();
+                                }
+                                Err(error) => self.notice = error.to_string(),
+                            }
+                        }
+                        Err(error) => self.notice = error,
                     }
                 }
                 Response::ReadState(id, read, response) => match response {
@@ -1773,6 +1820,38 @@ fn base64_encode(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_send_submits_without_a_review_dialog() {
+        let mut app = App::new(None, true);
+        app.native_ui = true;
+        app.editor.set("Test draft".into());
+        app.prepare_send();
+        assert_eq!(app.mode, Mode::Compose);
+        assert!(app.confirm_body.is_none());
+        assert_eq!(app.notice, "Submitting your message…");
+        // Demo mode has no API and cannot transmit a message.
+        assert!(app.api.is_none());
+    }
+    #[test]
+    fn inline_reply_loading_preserves_channel_and_older_history_cursor() {
+        let mut app = App::new(None, true);
+        let chat_id = app.active.as_ref().unwrap().id.clone();
+        app.message_cursor = Some("older-channel-page".into());
+        let before = app.messages.len();
+        app.tx.send(Response::InlineThread(chat_id.clone(), Ok(json!({"items":[{"id":"inline-reply","timestamp":"2026-11-10T01:00:00Z","threadRootID":"demo-1"}]})))).unwrap();
+        app.poll();
+        assert_eq!(app.messages.len(), before + 1);
+        assert_eq!(app.active.as_ref().unwrap().id, chat_id);
+        assert_eq!(app.message_cursor.as_deref(), Some("older-channel-page"));
+        app.tx
+            .send(Response::InlineThread(
+                "another-channel".into(),
+                Ok(json!({"items":[{"id":"wrong-reply"}]})),
+            ))
+            .unwrap();
+        app.poll();
+        assert!(!app.messages.iter().any(|m| m.id == "wrong-reply"));
+    }
     #[test]
     fn late_send_and_upload_results_cannot_change_another_conversations_composer() {
         let mut a = App::new(None, true);

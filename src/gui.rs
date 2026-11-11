@@ -29,6 +29,7 @@ pub struct Gui {
     search_focus: bool,
     message_search: bool,
     reaction_target: Option<(Conversation, Message)>,
+    expanded_thread: Option<(String, String)>,
     search_busy: bool,
     search_seq: u64,
     search_results: Value,
@@ -77,6 +78,7 @@ impl Gui {
             search_focus: false,
             message_search: false,
             reaction_target: None,
+            expanded_thread: None,
             search_busy: false,
             search_seq: 0,
             search_results: Value::Null,
@@ -119,6 +121,7 @@ impl Gui {
         self.app.refresh(false);
     }
     fn choose_chat(&mut self, chat: Conversation) {
+        self.expanded_thread = None;
         self.app.mode = Mode::Browse;
         self.app.open(chat);
         self.scroll_to = None;
@@ -723,6 +726,14 @@ impl Gui {
                         let group_threads = chat.source == "slack" && chat.thread_root_id.is_none();
                         for index in message_order(&messages, group_threads) {
                             let message = &messages[index];
+                            if group_threads
+                                && let Some(root) = &message.thread_root_id
+                                && messages.iter().any(|m| &m.id == root)
+                                && self.expanded_thread.as_ref()
+                                    != Some(&(chat.id.clone(), root.clone()))
+                            {
+                                continue;
+                            }
                             let day = day_label(&message.timestamp);
                             if day != previous_day {
                                 previous_day = day.clone();
@@ -775,265 +786,334 @@ impl Gui {
         index: usize,
         p: Palette,
     ) {
-        let response = egui::Frame::new()
-            .fill(if m.is_sender { p.own } else { p.bg })
-            .corner_radius(12)
-            .inner_margin(12)
-            .show(ui, |ui| {
-                ui.horizontal_top(|ui| {
-                    if self
-                        .avatar(ui, m.sender_contact_id.as_deref(), &m.sender_name, 34., p)
-                        .clicked()
-                        && let Some(id) = &m.sender_contact_id
-                    {
-                        self.app.open_contact(json!({"id":id}));
-                    }
-                    ui.vertical(|ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new(&m.sender_name)
-                                            .strong()
-                                            .color(if m.is_sender { p.accent } else { p.text }),
-                                    )
-                                    .frame(false)
-                                    .small(),
-                                )
+        let has_thread = chat.source == "slack"
+            && chat.thread_root_id.is_none()
+            && m.thread_root_id.is_none()
+            && (m.reply_count > 0
+                || self
+                    .app
+                    .messages
+                    .iter()
+                    .any(|reply| reply.thread_root_id.as_ref() == Some(&m.id)));
+        let mut thread_clicked = false;
+        let response = ui
+            .scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+                egui::Frame::new()
+                    .fill(if m.is_sender { p.own } else { p.bg })
+                    .corner_radius(12)
+                    .inner_margin(12)
+                    .show(ui, |ui| {
+                        ui.horizontal_top(|ui| {
+                            if self
+                                .avatar(ui, m.sender_contact_id.as_deref(), &m.sender_name, 34., p)
                                 .clicked()
                                 && let Some(id) = &m.sender_contact_id
                             {
                                 self.app.open_contact(json!({"id":id}));
                             }
-                            ui.label(
-                                RichText::new(time_label(&m.timestamp))
-                                    .size(11.)
-                                    .color(p.muted),
-                            );
-                            if m.historical_version {
-                                ui.label(RichText::new("Saved version").small().color(p.muted));
-                            }
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.menu_button("•••", |ui| {
-                                        if chat.source == "slack"
-                                            && chat.kind == "chat"
-                                            && chat.thread_root_id.is_none()
-                                            && ui.button("View full thread").clicked()
-                                        {
-                                            self.app.open_thread(m);
-                                            ui.close();
-                                        }
-                                        if ui.button("Copy message").clicked() {
-                                            ui.ctx().copy_text(m.text.clone());
-                                            ui.close();
-                                        }
-                                        if chat.can_reply && ui.button("Reply").clicked() {
-                                            self.reply_to(index);
-                                            ui.close();
-                                        }
-                                        if m.is_sender
-                                            && chat.kind == "chat"
-                                            && ui.button("Edit message").clicked()
-                                        {
-                                            self.app.message_selection = index;
-                                            self.app.editor.set(m.text.clone());
-                                            self.app.edit_message = Some(m.id.clone());
-                                            self.app.mode = Mode::Compose;
-                                            ui.close();
-                                        }
-                                        if let Some(id) = &m.sender_contact_id
-                                            && ui.button("View profile").clicked()
-                                        {
-                                            self.app.open_contact(json!({"id":id}));
-                                            ui.close();
-                                        }
-                                    });
-                                    if chat.can_react {
-                                        self.reaction_menu(ui, chat, m, p);
-                                    }
-                                    if chat.can_reply
-                                        && ui
-                                            .add(
-                                                egui::Button::new(
-                                                    RichText::new("↩").color(p.muted),
-                                                )
-                                                .frame(false)
-                                                .small(),
-                                            )
-                                            .on_hover_text("Reply")
-                                            .clicked()
-                                    {
-                                        self.reply_to(index);
-                                    }
-                                },
-                            );
-                        });
-                        if let Some(reply_id) = &m.linked_message_id
-                            && m.thread_root_id.as_ref() != Some(reply_id)
-                        {
-                            let reply = self
-                                .app
-                                .messages
-                                .iter()
-                                .find(|msg| &msg.id == reply_id)
-                                .cloned();
-                            let label = reply
-                                .as_ref()
-                                .map(|r| format!("{}  ·  {}", r.sender_name, one_line(&r.text)))
-                                .unwrap_or_else(|| "Reply to an earlier message".into());
-                            let card = egui::Frame::new()
-                                .fill(p.panel)
-                                .inner_margin(8)
-                                .corner_radius(5)
-                                .show(ui, |ui| {
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(label).size(12.).color(p.blue),
-                                        )
-                                        .truncate(),
-                                    );
-                                });
-                            if ui
-                                .interact(
-                                    card.response.rect,
-                                    ui.id().with(("reply", &m.id)),
-                                    egui::Sense::click(),
-                                )
-                                .clicked()
-                            {
-                                self.scroll_to = Some(reply_id.clone());
-                            }
-                        }
-                        if chat.kind == "email" {
-                            ui.label(RichText::new(&m.subject).strong());
-                            ui.label(
-                                RichText::new(format!("From {}", m.from))
-                                    .size(12.)
-                                    .color(p.muted),
-                            );
-                        }
-                        if !m.text.is_empty() {
-                            ui.add(egui::Label::new(&m.text).wrap().selectable(true));
-                            let links = message_links(&m.text);
-                            if !links.is_empty() {
-                                ui.horizontal_wrapped(|ui| {
-                                    for link in links {
-                                        let host = reqwest::Url::parse(&link)
-                                            .ok()
-                                            .and_then(|u| u.host_str().map(str::to_owned))
-                                            .unwrap_or_else(|| "link".into());
-                                        if ui
-                                            .button(
-                                                RichText::new(format!("Open {host}")).color(p.blue),
-                                            )
-                                            .on_hover_text(&link)
-                                            .clicked()
-                                            && let Err(e) = std::process::Command::new("brave")
-                                                .arg(&link)
-                                                .stdin(std::process::Stdio::null())
-                                                .stdout(std::process::Stdio::null())
-                                                .stderr(std::process::Stdio::null())
-                                                .spawn()
-                                        {
-                                            self.app.notice = format!("Could not open Brave: {e}");
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                        for (attachment_index, a) in m.attachments.iter().enumerate() {
-                            let target = Target {
-                                chat: chat.id.clone(),
-                                message: m.id.clone(),
-                                index: attachment_index,
-                                attachment: a.clone(),
-                            };
-                            if crate::images::is_image(a) {
-                                if self
-                                    .image(
-                                        ui,
-                                        &target,
-                                        egui::vec2(ui.available_width().min(440.), 300.),
-                                        p,
-                                    )
-                                    .clicked()
-                                {
-                                    self.gallery = m
-                                        .attachments
-                                        .iter()
-                                        .enumerate()
-                                        .filter(|(_, a)| crate::images::is_image(a))
-                                        .map(|(index, a)| Target {
-                                            chat: chat.id.clone(),
-                                            message: m.id.clone(),
-                                            index,
-                                            attachment: a.clone(),
-                                        })
-                                        .collect();
-                                    self.gallery_index = self
-                                        .gallery
-                                        .iter()
-                                        .position(|t| t.index == attachment_index)
-                                        .unwrap_or(0);
-                                }
-                            } else {
-                                if ui
-                                    .button(
-                                        RichText::new(format!(
-                                            "↓ Save {}",
-                                            a["fileName"].as_str().unwrap_or("Attachment")
-                                        ))
-                                        .color(p.blue),
-                                    )
-                                    .clicked()
-                                {
-                                    self.app.notice = "Downloading attachment…".into();
-                                    self.media.download_file(
-                                        target,
-                                        self.app.api.clone(),
-                                        ui.ctx(),
-                                    );
-                                }
-                            }
-                        }
-                        let mut reactions = BTreeMap::<String, (usize, bool)>::new();
-                        for reaction in &m.reactions {
-                            let key = reaction["reactionKey"].as_str().unwrap_or("?").to_owned();
-                            let e = reactions.entry(key).or_default();
-                            e.0 += 1;
-                            e.1 |= reaction["participantID"].as_str()
-                                == self.app.status["userID"].as_str()
-                                && reaction["participantID"].is_string();
-                        }
-                        if !reactions.is_empty() {
-                            ui.horizontal_wrapped(|ui| {
-                                for (key, (count, mine)) in reactions {
+                            ui.vertical(|ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
                                     if ui
-                                        .add_enabled(
-                                            chat.can_react,
-                                            egui::Button::new(format!("{key}  {count}"))
-                                                .fill(if mine { p.own } else { p.raised })
-                                                .corner_radius(10),
+                                        .add(
+                                            egui::Button::new(
+                                                RichText::new(&m.sender_name).strong().color(
+                                                    if m.is_sender { p.accent } else { p.text },
+                                                ),
+                                            )
+                                            .frame(false)
+                                            .small(),
                                         )
-                                        .on_hover_text(if mine {
-                                            "Remove your reaction"
-                                        } else {
-                                            "React"
+                                        .clicked()
+                                        && let Some(id) = &m.sender_contact_id
+                                    {
+                                        self.app.open_contact(json!({"id":id}));
+                                    }
+                                    ui.label(
+                                        RichText::new(time_label(&m.timestamp))
+                                            .size(11.)
+                                            .color(p.muted),
+                                    );
+                                    if m.historical_version {
+                                        ui.label(
+                                            RichText::new("Saved version").small().color(p.muted),
+                                        );
+                                    }
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            ui.menu_button("•••", |ui| {
+                                                if chat.source == "slack"
+                                                    && chat.kind == "chat"
+                                                    && chat.thread_root_id.is_none()
+                                                    && ui.button("View full thread").clicked()
+                                                {
+                                                    self.app.open_thread(m);
+                                                    ui.close();
+                                                }
+                                                if ui.button("Copy message").clicked() {
+                                                    ui.ctx().copy_text(m.text.clone());
+                                                    ui.close();
+                                                }
+                                                if chat.can_reply && ui.button("Reply").clicked() {
+                                                    self.reply_to(index);
+                                                    ui.close();
+                                                }
+                                                if m.is_sender
+                                                    && chat.kind == "chat"
+                                                    && ui.button("Edit message").clicked()
+                                                {
+                                                    self.app.message_selection = index;
+                                                    self.app.editor.set(m.text.clone());
+                                                    self.app.edit_message = Some(m.id.clone());
+                                                    self.app.mode = Mode::Compose;
+                                                    ui.close();
+                                                }
+                                                if let Some(id) = &m.sender_contact_id
+                                                    && ui.button("View profile").clicked()
+                                                {
+                                                    self.app.open_contact(json!({"id":id}));
+                                                    ui.close();
+                                                }
+                                            });
+                                            if chat.can_react {
+                                                self.reaction_menu(ui, chat, m, p);
+                                            }
+                                            if chat.can_reply
+                                                && ui
+                                                    .add(
+                                                        egui::Button::new(
+                                                            RichText::new("↩").color(p.muted),
+                                                        )
+                                                        .frame(false)
+                                                        .small(),
+                                                    )
+                                                    .on_hover_text("Reply")
+                                                    .clicked()
+                                            {
+                                                self.reply_to(index);
+                                            }
+                                        },
+                                    );
+                                });
+                                if let Some(reply_id) = &m.linked_message_id
+                                    && m.thread_root_id.as_ref() != Some(reply_id)
+                                {
+                                    let reply = self
+                                        .app
+                                        .messages
+                                        .iter()
+                                        .find(|msg| &msg.id == reply_id)
+                                        .cloned();
+                                    let label = reply
+                                        .as_ref()
+                                        .map(|r| {
+                                            format!("{}  ·  {}", r.sender_name, one_line(&r.text))
                                         })
+                                        .unwrap_or_else(|| "Reply to an earlier message".into());
+                                    let card = egui::Frame::new()
+                                        .fill(p.panel)
+                                        .inner_margin(8)
+                                        .corner_radius(5)
+                                        .show(ui, |ui| {
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(label).size(12.).color(p.blue),
+                                                )
+                                                .truncate(),
+                                            );
+                                        });
+                                    if ui
+                                        .interact(
+                                            card.response.rect,
+                                            ui.id().with(("reply", &m.id)),
+                                            egui::Sense::click(),
+                                        )
                                         .clicked()
                                     {
-                                        self.react(chat, m, &key, mine);
+                                        self.scroll_to = Some(reply_id.clone());
                                     }
                                 }
+                                if chat.kind == "email" {
+                                    ui.label(RichText::new(&m.subject).strong());
+                                    ui.label(
+                                        RichText::new(format!("From {}", m.from))
+                                            .size(12.)
+                                            .color(p.muted),
+                                    );
+                                }
+                                if !m.text.is_empty() {
+                                    thread_clicked |= ui
+                                        .add(egui::Label::new(&m.text).wrap().selectable(true))
+                                        .clicked();
+                                    let links = message_links(&m.text);
+                                    if !links.is_empty() {
+                                        ui.horizontal_wrapped(|ui| {
+                                            for link in links {
+                                                let host = reqwest::Url::parse(&link)
+                                                    .ok()
+                                                    .and_then(|u| u.host_str().map(str::to_owned))
+                                                    .unwrap_or_else(|| "link".into());
+                                                if ui
+                                                    .button(
+                                                        RichText::new(format!("Open {host}"))
+                                                            .color(p.blue),
+                                                    )
+                                                    .on_hover_text(&link)
+                                                    .clicked()
+                                                    && let Err(e) =
+                                                        std::process::Command::new("brave")
+                                                            .arg(&link)
+                                                            .stdin(std::process::Stdio::null())
+                                                            .stdout(std::process::Stdio::null())
+                                                            .stderr(std::process::Stdio::null())
+                                                            .spawn()
+                                                {
+                                                    self.app.notice =
+                                                        format!("Could not open Brave: {e}");
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
+                                if has_thread {
+                                    let count = m.reply_count.max(
+                                        self.app
+                                            .messages
+                                            .iter()
+                                            .filter(|reply| {
+                                                reply.thread_root_id.as_ref() == Some(&m.id)
+                                            })
+                                            .count(),
+                                    );
+                                    let expanded = self.expanded_thread.as_ref()
+                                        == Some(&(chat.id.clone(), m.id.clone()));
+                                    thread_clicked |= ui
+                                        .add(
+                                            egui::Label::new(
+                                                RichText::new(format!(
+                                                    "{count} {} · {}",
+                                                    if count == 1 { "reply" } else { "replies" },
+                                                    if expanded {
+                                                        "click to collapse"
+                                                    } else {
+                                                        "click to expand"
+                                                    }
+                                                ))
+                                                .small()
+                                                .color(p.muted),
+                                            )
+                                            .sense(egui::Sense::click()),
+                                        )
+                                        .clicked();
+                                }
+                                for (attachment_index, a) in m.attachments.iter().enumerate() {
+                                    let target = Target {
+                                        chat: chat.id.clone(),
+                                        message: m.id.clone(),
+                                        index: attachment_index,
+                                        attachment: a.clone(),
+                                    };
+                                    if crate::images::is_image(a) {
+                                        if self
+                                            .image(
+                                                ui,
+                                                &target,
+                                                egui::vec2(ui.available_width().min(440.), 300.),
+                                                p,
+                                            )
+                                            .clicked()
+                                        {
+                                            self.gallery = m
+                                                .attachments
+                                                .iter()
+                                                .enumerate()
+                                                .filter(|(_, a)| crate::images::is_image(a))
+                                                .map(|(index, a)| Target {
+                                                    chat: chat.id.clone(),
+                                                    message: m.id.clone(),
+                                                    index,
+                                                    attachment: a.clone(),
+                                                })
+                                                .collect();
+                                            self.gallery_index = self
+                                                .gallery
+                                                .iter()
+                                                .position(|t| t.index == attachment_index)
+                                                .unwrap_or(0);
+                                        }
+                                    } else {
+                                        if ui
+                                            .button(
+                                                RichText::new(format!(
+                                                    "↓ Save {}",
+                                                    a["fileName"].as_str().unwrap_or("Attachment")
+                                                ))
+                                                .color(p.blue),
+                                            )
+                                            .clicked()
+                                        {
+                                            self.app.notice = "Downloading attachment…".into();
+                                            self.media.download_file(
+                                                target,
+                                                self.app.api.clone(),
+                                                ui.ctx(),
+                                            );
+                                        }
+                                    }
+                                }
+                                let mut reactions = BTreeMap::<String, (usize, bool)>::new();
+                                for reaction in &m.reactions {
+                                    let key =
+                                        reaction["reactionKey"].as_str().unwrap_or("?").to_owned();
+                                    let e = reactions.entry(key).or_default();
+                                    e.0 += 1;
+                                    e.1 |= reaction["participantID"].as_str()
+                                        == self.app.status["userID"].as_str()
+                                        && reaction["participantID"].is_string();
+                                }
+                                if !reactions.is_empty() {
+                                    ui.horizontal_wrapped(|ui| {
+                                        for (key, (count, mine)) in reactions {
+                                            if ui
+                                                .add_enabled(
+                                                    chat.can_react,
+                                                    egui::Button::new(format!("{key}  {count}"))
+                                                        .fill(if mine { p.own } else { p.raised })
+                                                        .corner_radius(10),
+                                                )
+                                                .on_hover_text(if mine {
+                                                    "Remove your reaction"
+                                                } else {
+                                                    "React"
+                                                })
+                                                .clicked()
+                                            {
+                                                self.react(chat, m, &key, mine);
+                                            }
+                                        }
+                                    });
+                                }
                             });
-                        }
-                    });
-                });
+                        });
+                    })
+                    .response
             })
             .response;
+        if has_thread {
+            response
+                .clone()
+                .on_hover_text("Click to expand or collapse replies");
+            if (response.clicked() || thread_clicked) && !response.double_clicked() {
+                let target = (chat.id.clone(), m.id.clone());
+                if self.expanded_thread.as_ref() == Some(&target) {
+                    self.expanded_thread = None;
+                } else {
+                    self.expanded_thread = Some(target);
+                    self.app.load_inline_thread(&m.id);
+                }
+            }
+        }
         if chat.can_react {
             let activation_pos = ui.input(|input| {
                 input.pointer.interact_pos().filter(|pos| {
@@ -1269,9 +1349,16 @@ impl Gui {
                         if ui
                             .add_enabled(
                                 can_send,
-                                egui::Button::new(RichText::new("Review & send").color(p.bg))
-                                    .fill(p.accent)
-                                    .corner_radius(7),
+                                egui::Button::new(
+                                    RichText::new(if self.app.edit_message.is_some() {
+                                        "Save"
+                                    } else {
+                                        "Send"
+                                    })
+                                    .color(p.bg),
+                                )
+                                .fill(p.accent)
+                                .corner_radius(7),
                             )
                             .clicked()
                             || (can_send && send_key)
@@ -2070,6 +2157,57 @@ pub fn run(app: App) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn clicking_parent_expands_and_collapses_inline_thread() {
+        let ctx = egui::Context::default();
+        let mut gui = Gui::new(App::new(None, true), &ctx);
+        let mut chat = gui.app.active.clone().unwrap();
+        chat.source = "slack".into();
+        let mut message = gui.app.messages[0].clone();
+        message.reply_count = 2;
+        let mut time = 0.;
+        let mut frame = |gui: &mut Gui, events| {
+            time += 0.4;
+            let mut rect = egui::Rect::NOTHING;
+            let _ = ctx.run(
+                egui::RawInput {
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let top = ui.cursor().top();
+                        gui.message(ui, &chat, &message, 0, gui.theme.palette());
+                        rect = egui::Rect::from_min_max(
+                            egui::pos2(ui.min_rect().left(), top),
+                            egui::pos2(ui.max_rect().right(), ui.cursor().top()),
+                        );
+                    });
+                },
+            );
+            rect.center()
+        };
+        assert!(gui.expanded_thread.is_none());
+        let pos = frame(&mut gui, vec![]);
+        for expanded in [true, false] {
+            for pressed in [true, false] {
+                frame(
+                    &mut gui,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                );
+            }
+            assert_eq!(gui.expanded_thread.is_some(), expanded);
+        }
+    }
     #[test]
     fn inline_threads_keep_replies_with_parent_and_preserve_action_indices() {
         let message = |id: &str, root: Option<&str>| Message {
