@@ -111,7 +111,7 @@ pub enum Response {
     Messages(String, u64, Result<Value, String>, bool, bool),
     InlineThread(String, Result<Value, String>),
     Operation(String, Result<Value, String>),
-    ReadState(String, bool, Result<Value, String>),
+    ReadState(String, u64, bool, Result<Value, String>),
     Sent(String, Result<Value, String>),
     Uploaded(String, Result<Value, String>),
     Accounts(Result<Value, String>),
@@ -119,6 +119,14 @@ pub enum Response {
 }
 fn result(r: anyhow::Result<Value>) -> Result<Value, String> {
     r.map_err(|e| format!("{e:#}"))
+}
+
+struct ReadOverride {
+    revision: u64,
+    read: bool,
+    previous_unread: bool,
+    timestamp: String,
+    acknowledged_after: Option<u64>,
 }
 
 #[derive(Clone, Default)]
@@ -185,7 +193,9 @@ pub struct App {
     pub status: Value,
     pub connections: Value,
     pending_read: Option<String>,
-    read_tx: Option<UnboundedSender<(String, bool)>>,
+    read_tx: Option<UnboundedSender<(String, u64, bool)>>,
+    read_revision: u64,
+    read_overrides: HashMap<String, ReadOverride>,
     pub archive_status: Value,
     pub last_connection_refresh: Instant,
     pub focus_view: bool,
@@ -212,13 +222,13 @@ impl App {
     pub fn new(api: Option<Api>, demo: bool) -> Self {
         let (tx, rx) = unbounded_channel();
         let read_tx = api.clone().filter(|_| !demo).map(|api| {
-            let (queue, mut reads) = unbounded_channel::<(String, bool)>();
+            let (queue, mut reads) = unbounded_channel::<(String, u64, bool)>();
             let responses = tx.clone();
             tokio::spawn(async move {
-                while let Some((id, read)) = reads.recv().await {
+                while let Some((id, revision, read)) = reads.recv().await {
                     let route = Api::conversation(&id, if read { "read" } else { "unread" });
                     let response = result(api.post(&route, json!({})).await);
-                    let _ = responses.send(Response::ReadState(id, read, response));
+                    let _ = responses.send(Response::ReadState(id, revision, read, response));
                 }
             });
             queue
@@ -273,6 +283,8 @@ impl App {
             status: Value::Null,
             connections: Value::Null,
             pending_read: None,
+            read_revision: 0,
+            read_overrides: HashMap::new(),
             read_tx,
             archive_status: Value::Null,
             last_connection_refresh: Instant::now(),
@@ -655,6 +667,10 @@ impl App {
         self.pending_read =
             (c.kind != "archive" && c.thread_root_id.is_none()).then(|| c.id.clone());
         self.active = Some(c);
+        if self.pending_read.is_some() {
+            let id = self.pending_read.clone().unwrap();
+            self.optimistic_read(&id, true);
+        }
         self.focus = Focus::Messages;
         self.messages.clear();
         self.message_cursor = None;
@@ -722,13 +738,62 @@ impl App {
         chat.thread_root_id = None;
         self.open(chat);
     }
+    fn apply_read_locally(&mut self, id: &str, unread: bool) {
+        for c in &mut self.conversations {
+            if c.id == id {
+                c.unread = unread;
+            }
+        }
+        if let Some(c) = &mut self.active
+            && c.id == id
+        {
+            c.unread = unread;
+        }
+    }
+    fn optimistic_read(&mut self, id: &str, read: bool) -> u64 {
+        let previous_unread = self
+            .read_overrides
+            .get(id)
+            .filter(|old| old.read == read)
+            .map(|old| old.previous_unread)
+            .unwrap_or_else(|| {
+                self.conversations
+                    .iter()
+                    .find(|c| c.id == id)
+                    .or_else(|| self.active.as_ref().filter(|c| c.id == id))
+                    .is_some_and(|c| c.unread)
+            });
+        let timestamp = self
+            .conversations
+            .iter()
+            .find(|c| c.id == id)
+            .or_else(|| self.active.as_ref().filter(|c| c.id == id))
+            .map(|c| c.timestamp.clone())
+            .unwrap_or_default();
+        self.read_revision += 1;
+        self.read_overrides.insert(
+            id.into(),
+            ReadOverride {
+                revision: self.read_revision,
+                read,
+                previous_unread,
+                timestamp,
+                acknowledged_after: None,
+            },
+        );
+        self.apply_read_locally(id, !read);
+        self.read_revision
+    }
     pub fn set_read_state(&mut self, read: bool) {
         self.pending_read = None;
         if let Some(c) = &self.active
             && c.kind != "archive"
-            && let Some(queue) = &self.read_tx
         {
-            let _ = queue.send((c.id.clone(), read));
+            let id = c.id.clone();
+            let revision = self.optimistic_read(&id, read);
+            if let Some(queue) = &self.read_tx {
+                let _ = queue.send((id, revision, read));
+            }
         }
     }
     pub fn load_messages(&mut self, older: bool) {
@@ -1110,7 +1175,35 @@ impl App {
                             let refreshing = v["_cache"]["refreshing"] == true;
                             let cache_error = v["_cache"]["error"].is_string();
                             match serde_json::from_value::<Inbox>(v) {
-                                Ok(data) => {
+                                Ok(mut data) => {
+                                    for c in &mut data.items {
+                                        if let Some(state) = self.read_overrides.get(&c.id) {
+                                            if !cached
+                                                && state
+                                                    .acknowledged_after
+                                                    .is_some_and(|ack| seq > ack)
+                                                && (c.unread != state.read
+                                                    || (state.read
+                                                        && chrono::DateTime::parse_from_rfc3339(
+                                                            &c.timestamp,
+                                                        )
+                                                        .ok()
+                                                        .zip(
+                                                            chrono::DateTime::parse_from_rfc3339(
+                                                                &state.timestamp,
+                                                            )
+                                                            .ok(),
+                                                        )
+                                                        .is_some_and(|(current, prior)| {
+                                                            current > prior
+                                                        })))
+                                            {
+                                                self.read_overrides.remove(&c.id);
+                                            } else {
+                                                c.unread = !state.read;
+                                            }
+                                        }
+                                    }
                                     let selected = self.selected().map(|c| c.id);
                                     if append {
                                         for c in data.items {
@@ -1258,22 +1351,28 @@ impl App {
                         Err(error) => self.notice = error,
                     }
                 }
-                Response::ReadState(id, read, response) => match response {
-                    Ok(_) => {
-                        for c in &mut self.conversations {
-                            if c.id == id {
-                                c.unread = !read;
-                            }
-                        }
-                        if let Some(c) = &mut self.active
-                            && c.id == id
-                        {
-                            c.unread = !read;
-                        }
-                        self.refresh(true);
+                Response::ReadState(id, revision, read, response) => {
+                    if self
+                        .read_overrides
+                        .get(&id)
+                        .is_none_or(|state| state.revision != revision)
+                    {
+                        continue;
                     }
-                    Err(error) => self.notice = format!("Could not update read state: {error}"),
-                },
+                    match response {
+                        Ok(_) => {
+                            self.read_overrides.get_mut(&id).unwrap().acknowledged_after =
+                                Some(self.request_seq);
+                            self.apply_read_locally(&id, !read);
+                            self.refresh(false);
+                        }
+                        Err(error) => {
+                            let state = self.read_overrides.remove(&id).unwrap();
+                            self.apply_read_locally(&id, state.previous_unread);
+                            self.notice = format!("Could not update read state: {error}");
+                        }
+                    }
+                }
                 Response::Operation(label, r) => match r {
                     Ok(v) => match label.as_str() {
                         "status" => self.status = v,
@@ -1821,6 +1920,88 @@ fn base64_encode(data: &[u8]) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn stale_inbox_cannot_restore_unread_but_new_messages_can_after_sync() {
+        let mut app = App::new(None, true);
+        let mut chat = app.active.clone().unwrap();
+        chat.unread = true;
+        app.conversations = vec![chat.clone()];
+        let (queue, mut reads) = unbounded_channel();
+        app.read_tx = Some(queue);
+        app.set_read_state(true);
+        let (id, revision, _) = reads.try_recv().unwrap();
+        app.tx
+            .send(Response::ReadState(id, revision, true, Ok(json!({}))))
+            .unwrap();
+        app.poll();
+        for (seq, source_unread, displayed_unread) in
+            [(1, true, false), (2, false, false), (3, true, true)]
+        {
+            app.request_seq = seq;
+            chat.unread = source_unread;
+            app.tx
+                .send(Response::Inbox(seq, Ok(json!({"items":[chat]})), false))
+                .unwrap();
+            app.poll();
+            assert_eq!(app.conversations[0].unread, displayed_unread);
+        }
+    }
+    #[test]
+    fn opening_clears_unread_before_messages_or_receipts_arrive() {
+        let mut app = App::new(None, true);
+        let mut chat = app.active.clone().unwrap();
+        chat.unread = true;
+        app.conversations = vec![chat.clone()];
+        app.messages.clear();
+        app.message_cache.clear();
+        app.open(chat.clone());
+        assert!(!app.active.as_ref().unwrap().unread);
+        assert!(!app.conversations[0].unread);
+        assert_eq!(app.pending_read.as_deref(), Some(chat.id.as_str()));
+        app.tx
+            .send(Response::Inbox(
+                app.request_seq,
+                Ok(json!({"items":[chat], "_cache":{"cached":true}})),
+                false,
+            ))
+            .unwrap();
+        app.poll();
+        assert!(!app.conversations[0].unread);
+    }
+    #[test]
+    fn read_receipts_cannot_undo_newer_manual_unread_and_failures_roll_back() {
+        let mut app = App::new(None, true);
+        let (queue, mut reads) = unbounded_channel();
+        app.read_tx = Some(queue);
+        let chat = app.active.clone().unwrap();
+        app.conversations = vec![chat.clone()];
+        app.set_read_state(true);
+        let (_, old_revision, _) = reads.try_recv().unwrap();
+        app.set_read_state(false);
+        let (_, revision, _) = reads.try_recv().unwrap();
+        assert!(app.conversations[0].unread);
+        app.tx
+            .send(Response::ReadState(
+                chat.id.clone(),
+                old_revision,
+                true,
+                Ok(json!({})),
+            ))
+            .unwrap();
+        app.poll();
+        assert!(app.conversations[0].unread);
+        app.tx
+            .send(Response::ReadState(
+                chat.id,
+                revision,
+                false,
+                Err("offline".into()),
+            ))
+            .unwrap();
+        app.poll();
+        assert!(!app.conversations[0].unread);
+        assert!(app.notice.contains("offline"));
+    }
+    #[test]
     fn native_send_submits_without_a_review_dialog() {
         let mut app = App::new(None, true);
         app.native_ui = true;
@@ -2011,16 +2192,22 @@ mod tests {
         app.read_tx = Some(queue);
         let chat = app.active.clone().unwrap();
         app.open(chat.clone());
-        assert_eq!(reads.try_recv().unwrap(), (chat.id.clone(), true));
+        assert_eq!(
+            reads.try_recv().map(|(id, _, read)| (id, read)).unwrap(),
+            (chat.id.clone(), true)
+        );
         assert!(app.pending_read.is_none());
         let mut next = chat.clone();
         next.id = "matrix:other".into();
         app.open(next);
         assert!(reads.try_recv().is_err());
         app.open(chat.clone());
-        assert_eq!(reads.try_recv().unwrap(), (chat.id, true));
+        assert_eq!(
+            reads.try_recv().map(|(id, _, read)| (id, read)).unwrap(),
+            (chat.id, true)
+        );
         app.set_read_state(false);
-        assert!(!reads.try_recv().unwrap().1);
+        assert!(!reads.try_recv().map(|(id, _, read)| (id, read)).unwrap().1);
     }
     #[test]
     fn opening_marks_read_once_and_manual_unread_survives_refresh() {
@@ -2039,9 +2226,15 @@ mod tests {
             false,
         ));
         app.poll();
-        assert_eq!(reads.try_recv().unwrap(), (chat.id.clone(), true));
+        assert_eq!(
+            reads.try_recv().map(|(id, _, read)| (id, read)).unwrap(),
+            (chat.id.clone(), true)
+        );
         app.set_read_state(false);
-        assert_eq!(reads.try_recv().unwrap(), (chat.id.clone(), false));
+        assert_eq!(
+            reads.try_recv().map(|(id, _, read)| (id, read)).unwrap(),
+            (chat.id.clone(), false)
+        );
         let _ = app.tx.send(Response::Messages(
             chat.id.clone(),
             app.message_request_seq,
@@ -2053,7 +2246,10 @@ mod tests {
         assert!(reads.try_recv().is_err());
         app.open(chat.clone());
         app.set_read_state(false);
-        assert_eq!(reads.try_recv().unwrap(), (chat.id.clone(), false));
+        assert_eq!(
+            reads.try_recv().map(|(id, _, read)| (id, read)).unwrap(),
+            (chat.id.clone(), false)
+        );
         let _ = app.tx.send(Response::Messages(
             chat.id.clone(),
             app.message_request_seq,

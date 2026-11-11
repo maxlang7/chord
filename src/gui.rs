@@ -473,6 +473,7 @@ impl Gui {
                                         let response = self.avatar(ui, photo, &chat.title, 36., p);
                                         if response.clicked() {
                                             self.choose_chat(chat.clone());
+                                ctx.request_repaint();
                                         }
                                         ui.vertical(|ui| {
                                             ui.set_max_width((ui.available_width() - 12.).max(50.));
@@ -531,6 +532,7 @@ impl Gui {
                             {
                                 self.app.selection = chat_index;
                                 self.choose_chat(chat.clone());
+                                ctx.request_repaint();
                             }
                             ui.add_space(3.);
                         }
