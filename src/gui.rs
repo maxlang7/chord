@@ -1,4 +1,5 @@
 mod icons;
+mod links;
 mod media;
 mod theme;
 
@@ -945,38 +946,7 @@ impl Gui {
                                     );
                                 }
                                 if !m.text.is_empty() {
-                                    thread_clicked |= ui
-                                        .add(egui::Label::new(&m.text).wrap().selectable(true))
-                                        .clicked();
-                                    let links = message_links(&m.text);
-                                    if !links.is_empty() {
-                                        ui.horizontal_wrapped(|ui| {
-                                            for link in links {
-                                                let host = reqwest::Url::parse(&link)
-                                                    .ok()
-                                                    .and_then(|u| u.host_str().map(str::to_owned))
-                                                    .unwrap_or_else(|| "link".into());
-                                                if ui
-                                                    .button(
-                                                        RichText::new(format!("Open {host}"))
-                                                            .color(p.blue),
-                                                    )
-                                                    .on_hover_text(&link)
-                                                    .clicked()
-                                                    && let Err(e) =
-                                                        std::process::Command::new("brave")
-                                                            .arg(&link)
-                                                            .stdin(std::process::Stdio::null())
-                                                            .stdout(std::process::Stdio::null())
-                                                            .stderr(std::process::Stdio::null())
-                                                            .spawn()
-                                                {
-                                                    self.app.notice =
-                                                        format!("Could not open Brave: {e}");
-                                                }
-                                            }
-                                        });
-                                    }
+                                    thread_clicked |= links::text(ui, &m.text);
                                 }
                                 if has_thread {
                                     let count = m.reply_count.max(
@@ -1807,7 +1777,7 @@ impl Gui {
                         self.app.mode = Mode::Accounts;
                     }
                     ui.heading(&self.app.login_id);
-                    ui.label(
+                    links::text(ui,
                         self.app.login["instructions"]
                             .as_str()
                             .unwrap_or("Follow the account's sign-in instructions."),
@@ -1957,6 +1927,10 @@ impl Gui {
                     }
                     for (label, brave) in [("Save original", false), ("Open in Brave", true)] {
                         if ui.button(label).clicked() {
+                            if !brave {
+                                self.media.save_original(&target, ui.ctx());
+                                continue;
+                            }
                             self.app.notice = match self.media.save(&target, brave) {
                                 Ok(file) => format!("Saved {}", file.display()),
                                 Err(e) => e,
@@ -2069,6 +2043,23 @@ impl eframe::App for Gui {
         if self.app.quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+        let urls = ctx.output_mut(|output| {
+            let mut urls = Vec::new();
+            output.commands.retain(|command| {
+                if let egui::OutputCommand::OpenUrl(url) = command {
+                    urls.push(url.url.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            urls
+        });
+        for url in urls {
+            if let Err(error) = links::open(&url) {
+                self.app.notice = format!("Could not open Brave: {error}");
+            }
+        }
         ctx.request_repaint_after(Duration::from_millis(250));
     }
 }
@@ -2105,23 +2096,6 @@ fn message_order(messages: &[Message], group_threads: bool) -> Vec<usize> {
     order
 }
 
-fn message_links(text: &str) -> Vec<String> {
-    let mut links = vec![];
-    for word in text.split_whitespace() {
-        let candidate = word
-            .trim_start_matches(['(', '[', '<'])
-            .trim_end_matches(['.', ',', ';', ')', ']', '>']);
-        if let Ok(url) = reqwest::Url::parse(candidate)
-            && matches!(url.scheme(), "http" | "https")
-            && url.host_str().is_some()
-            && !links.iter().any(|s| s == candidate)
-            && links.len() < 12
-        {
-            links.push(candidate.to_owned());
-        }
-    }
-    links
-}
 fn initials(name: &str) -> String {
     let result: String = name
         .split_whitespace()
@@ -2226,15 +2200,6 @@ mod tests {
         ];
         assert_eq!(message_order(&messages, true), vec![0, 2, 4, 1, 3]);
         assert_eq!(message_order(&messages, false), vec![0, 1, 2, 3, 4]);
-    }
-    #[test]
-    fn external_links_only_accept_web_urls_and_deduplicate() {
-        assert_eq!(
-            message_links(
-                "See https://example.test/path. https://example.test/path file:///tmp/test javascript:alert(1)"
-            ),
-            vec!["https://example.test/path"]
-        );
     }
     #[test]
     fn initials_handle_unicode_and_empty_names() {

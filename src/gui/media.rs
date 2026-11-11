@@ -178,12 +178,34 @@ impl Media {
                 let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded).or_else(|_| base64::engine::general_purpose::STANDARD.decode(encoded))?;
                 if bytes.len() > images::MAX_BYTES { anyhow::bail!("Attachment exceeds 20 MB"); }
                 let name = value["fileName"].as_str().unwrap_or_else(|| target.name());
-                let extension = std::path::Path::new(name).extension().and_then(|s| s.to_str()).unwrap_or("bin");
-                images::save_bytes(&bytes, name, extension)
+                save_dialog(&bytes, name).await
             }.await;
             let notice = match result {
-                Ok(file) => format!("Saved {}", file.display()),
+                Ok(Some(file)) => format!("Saved {}", file.display()),
+                Ok(None) => "Download cancelled".into(),
                 Err(e) => format!("Download failed: {e:#}"),
+            };
+            let _ = tx.send(Event::Notice(notice));
+            ctx.request_repaint();
+        });
+    }
+    pub fn save_original(&self, target: &Target, ctx: &egui::Context) {
+        let Some(Entry::Ready { data, .. }) = self.cache.get(&target.key()) else {
+            return;
+        };
+        let bytes = data.bytes.clone();
+        let name = if std::path::Path::new(target.name()).extension().is_none() {
+            format!("{}.{}", target.name(), data.extension)
+        } else {
+            target.name().to_owned()
+        };
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+        tokio::spawn(async move {
+            let notice = match save_dialog(&bytes, &name).await {
+                Ok(Some(file)) => format!("Saved {}", file.display()),
+                Ok(None) => "Download cancelled".into(),
+                Err(error) => format!("Save failed: {error:#}"),
             };
             let _ = tx.send(Event::Notice(notice));
             ctx.request_repaint();
@@ -205,4 +227,22 @@ impl Media {
         }
         Ok(file)
     }
+}
+
+// rfd's xdg-portal backend delegates to the desktop's configured FileChooser.
+async fn save_dialog(bytes: &[u8], name: &str) -> anyhow::Result<Option<std::path::PathBuf>> {
+    let name = std::path::Path::new(name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("attachment");
+    let Some(file) = rfd::AsyncFileDialog::new()
+        .set_title("Save attachment")
+        .set_file_name(name)
+        .save_file()
+        .await
+    else {
+        return Ok(None);
+    };
+    file.write(bytes).await?;
+    Ok(Some(file.path().to_owned()))
 }
