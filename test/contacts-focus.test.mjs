@@ -102,3 +102,16 @@ test('older bridge activity cannot push a newly active conversation back into Oc
  const c=directory.enrichConversation({id:'matrix:!room',remoteId:'!room',participants:[],timestamp:'2026-11-09T00:00:00Z'});
  assert.equal(c.timestamp,'2026-11-09T00:00:00.000Z');
 });
+test('group photos use at most three distinct humans and exclude phone conversations',()=>{
+ const book=memoryBook(),directory=new Directory(book,{blue:async()=>[],config:()=>({})});
+ const keys=['me','bot','one','two','three','four'].map(s=>'@slack_'+s+':chord.local');
+ keys.forEach((key,i)=>book.observe({key,name:['Me','Bridge','One','Two','Three','Four'][i],source:'slack',isBot:i===1}));
+ directory.catalog.selfIds=new Set([keys[0]]);
+ directory.catalog.rooms.set('!group',{direct:false,avatarMembers:keys});
+ for(const source of ['slack','discord','whatsapp']){
+  const group=directory.enrichConversation({id:'matrix:!group',remoteId:'!group',source,participants:[keys[2],keys[2]]});
+  assert.deepEqual(group.avatarContacts.map(p=>p.name),['One','Two','Three']);
+ }
+ const phone=directory.enrichConversation({id:'phone',kind:'phone',source:'iphone',participants:keys,blue:{is_group:true}});
+ assert.deepEqual(phone.avatarContacts,[]);
+});

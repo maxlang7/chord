@@ -27,6 +27,7 @@ pub struct Conversation {
     pub direct: bool,
     #[serde(rename = "contactIDs")]
     pub contact_ids: Vec<String>,
+    pub avatar_contacts: Vec<Value>,
     pub importance: Value,
 }
 

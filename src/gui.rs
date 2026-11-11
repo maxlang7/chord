@@ -517,7 +517,27 @@ impl Gui {
         {
             let mut avatar_ui = ui.new_child(egui::UiBuilder::new().max_rect(avatar_rect));
             let ui = &mut avatar_ui;
-            if chat.direct || chat.contact_ids.is_empty() {
+            let group =
+                !chat.direct && matches!(chat.source.as_str(), "slack" | "discord" | "whatsapp");
+            let members: Vec<(&str, &str)> = if !chat.avatar_contacts.is_empty() {
+                chat.avatar_contacts
+                    .iter()
+                    .filter_map(|person| {
+                        Some((
+                            person["id"].as_str()?,
+                            person["name"].as_str().unwrap_or("?"),
+                        ))
+                    })
+                    .take(3)
+                    .collect()
+            } else {
+                chat.contact_ids
+                    .iter()
+                    .take(3)
+                    .map(|id| (id.as_str(), "?"))
+                    .collect()
+            };
+            if !group || members.is_empty() {
                 self.avatar(
                     ui,
                     chat.contact_ids
@@ -529,7 +549,7 @@ impl Gui {
                     p,
                 );
             } else {
-                for (index, id) in chat.contact_ids.iter().take(3).enumerate() {
+                for (index, (id, name)) in members.iter().enumerate() {
                     let offset = [
                         egui::vec2(0., 0.),
                         egui::vec2(20., 0.),
@@ -538,7 +558,8 @@ impl Gui {
                     let cell =
                         egui::Rect::from_min_size(avatar_rect.min + offset, Vec2::splat(25.));
                     let mut cell_ui = ui.new_child(egui::UiBuilder::new().max_rect(cell));
-                    self.avatar(&mut cell_ui, Some(id), &chat.title, 25., p);
+                    ui.painter().circle_filled(cell.center(), 14.5, p.panel);
+                    self.avatar(&mut cell_ui, Some(id), name, 25., p);
                 }
             }
         }

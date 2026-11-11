@@ -22,7 +22,7 @@ export class Directory{
  enrichConversation(c){
   const room=this.catalog.rooms.get(c.remoteId);
   const self=this.catalog.selfIds;
-  const keys=[...(room?.otherUser?[room.otherUser]:[]),...(c.participants||[])].filter(k=>!self.has(k)&&!/^@(slack|discord|whatsapp)bot:chord\.local$/.test(k));
+  const keys=[...(room?.otherUser?[room.otherUser]:[]),...(room?.avatarMembers||[]),...(c.participants||[])].filter(k=>!self.has(k)&&!/^@(slack|discord|whatsapp)bot:chord\.local$/.test(k));
   if(c.kind==='phone')keys.push(...(c.participants||[]).map(phoneIdentity).filter(Boolean));
   if(c.kind==='email'){
    const p=this.observeMail(c.from||'');if(p)keys.push(p.identities.find(i=>i.source==='email')?.key);
@@ -34,7 +34,9 @@ export class Directory{
   const other=room?.otherUser||keys.find(k=>!k.includes('bot:'));
   const resolved=this.book.name(other);
   if(direct){const stamp=room?.activity?.lastMessageAt||Date.parse(c.timestamp)||0;for(const id of contactIDs){const p=this.book.data.people[id];if(p&&stamp>(p.lastInteractionAt||0)){p.lastInteractionAt=stamp;this.book.dirty=true}}}
-  const enriched={...c,previewSenderName:this.book.name(c.previewSenderID,c.previewSenderName)||c.previewSenderName||'',serverID:room?.serverID||null,serverName:room?.serverName||null,channelID:room?.portalId||null,channelName:room?.title||null,...(room?.activity?{activity:room.activity}:{}),direct,groupDM:!!room?.groupDM,contactIDs,knownContact:contactIDs.some(id=>{const p=this.book.data.people[id];return p?.customName||p?.favorite||p?.identities.some(i=>i.source!=='email')}),isBot:direct&&!!this.book.person(other)?.identities.some(i=>i.isBot),title:direct&&resolved&&c.kind!=='email'?resolved:c.title,...(room?.activity?.lastMessageAt?{timestamp:new Date(Math.max(room.activity.lastMessageAt,Date.parse(c.timestamp)||0)).toISOString()}:{})};this.conversations.set(c.id,enriched);return enriched;
+  const avatarContacts=!direct&&['slack','discord','whatsapp'].includes(c.source)
+   ? contactIDs.map(id=>this.book.data.people[id]).filter(p=>p&&!p.identities.some(i=>i.isBot)&&!/[（(]bot[）)]\s*$/i.test(this.book.present(p).name)).slice(0,3).map(p=>({id:p.id,name:this.book.present(p).name})) : [];
+  const enriched={...c,avatarContacts,previewSenderName:this.book.name(c.previewSenderID,c.previewSenderName)||c.previewSenderName||'',serverID:room?.serverID||null,serverName:room?.serverName||null,channelID:room?.portalId||null,channelName:room?.title||null,...(room?.activity?{activity:room.activity}:{}),direct,groupDM:!!room?.groupDM,contactIDs,knownContact:contactIDs.some(id=>{const p=this.book.data.people[id];return p?.customName||p?.favorite||p?.identities.some(i=>i.source!=='email')}),isBot:direct&&!!this.book.person(other)?.identities.some(i=>i.isBot),title:direct&&resolved&&c.kind!=='email'?resolved:c.title,...(room?.activity?.lastMessageAt?{timestamp:new Date(Math.max(room.activity.lastMessageAt,Date.parse(c.timestamp)||0)).toISOString()}:{})};this.conversations.set(c.id,enriched);return enriched;
  }
  async profile(key){
   if(!/^@[^:]+:chord\.local$/.test(key)||this.profiles.get(key)>Date.now())return;

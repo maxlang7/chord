@@ -41,6 +41,19 @@ export function readContactCatalog(dataDir, owner='@max:chord.local') {
     }
    }
    for(const id of mine)selfIds.add(`@${network}_${id}:chord.local`);
+   // Matrix lazy membership often contains only one human. Use known authors
+   // for a stable, bounded set of representative group photos.
+   const authors=network==='discord'
+    ? query('SELECT dc_chan_id AS portal_id,dc_chan_receiver AS receiver,dc_sender AS sender,COUNT(*) AS total FROM message GROUP BY dc_chan_id,dc_chan_receiver,dc_sender ORDER BY total DESC,sender')
+    : query('SELECT room_id AS portal_id,room_receiver AS receiver,sender_id AS sender,COUNT(*) AS total FROM message GROUP BY room_id,room_receiver,sender_id ORDER BY total DESC,sender');
+   const members=new Map();
+   for(const author of authors){
+    const sender=String(author.sender||'');if(!sender||mine.includes(sender.toLowerCase()))continue;
+    const key=author.portal_id+'|'+author.receiver,list=members.get(key)||[];
+    if(list.length<12)list.push(`@${network}_${sender}:chord.local`);
+    members.set(key,list);
+   }
+   for(const room of rooms.values())if(room.network===network&&!room.direct)room.avatarMembers=members.get(room.portalId+'|'+room.receiver)||[];
    const placeholders=mine.length?mine.map(()=>'?').join(','):'NULL';
    const stats=network==='discord'
     ? query(`SELECT dc_chan_id AS portal_id,dc_chan_receiver AS receiver,COUNT(*) AS total,MAX(timestamp * 1.0) AS last_at,SUM(CASE WHEN dc_sender IN (${placeholders}) THEN 1 ELSE 0 END) AS sent,MAX(CASE WHEN dc_sender IN (${placeholders}) THEN timestamp * 1.0 ELSE 0 END) AS last_sent FROM message GROUP BY dc_chan_id,dc_chan_receiver`,...mine,...mine)
