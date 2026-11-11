@@ -161,8 +161,6 @@ impl Gui {
                     (2, "Discord", "D"),
                     (3, "WhatsApp", "W"),
                     (4, "iPhone", "P"),
-                    (5, "Personal email", "@"),
-                    (6, "CMU email", "CMU"),
                 ] {
                     let response =
                         icons::button(ui, index, label, compact, self.app.source == index, p);
