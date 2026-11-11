@@ -484,7 +484,7 @@ impl Gui {
         p: Palette,
     ) -> egui::Response {
         let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 82.), egui::Sense::click());
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 90.), egui::Sense::click());
         if !ui.is_rect_visible(rect) {
             return response;
         }
@@ -507,13 +507,13 @@ impl Gui {
         }
         if active {
             ui.painter().rect_filled(
-                egui::Rect::from_min_size(rect.min + egui::vec2(0., 15.), egui::vec2(3., 52.)),
+                egui::Rect::from_min_size(rect.min + egui::vec2(0., 18.), egui::vec2(3., 54.)),
                 2.,
                 color,
             );
         }
         let avatar_rect =
-            egui::Rect::from_min_size(rect.min + egui::vec2(9., 17.), Vec2::splat(44.));
+            egui::Rect::from_min_size(rect.min + egui::vec2(9., 23.), Vec2::splat(44.));
         ui.scope_builder(egui::UiBuilder::new().max_rect(avatar_rect), |ui| {
             if chat.direct || chat.contact_ids.is_empty() {
                 self.avatar(
@@ -562,7 +562,7 @@ impl Gui {
             .size()
             .x;
         ui.painter().text(
-            egui::pos2(right, rect.top() + 19.),
+            egui::pos2(right, rect.top() + 20.),
             egui::Align2::RIGHT_TOP,
             stamp,
             stamp_font,
@@ -580,7 +580,7 @@ impl Gui {
         row_text(
             ui,
             &title,
-            egui::pos2(text_left, rect.top() + 18.),
+            egui::pos2(text_left, rect.top() + 20.),
             (right - text_left - stamp_width - 12.).max(28.),
             16.,
             p.text,
@@ -593,14 +593,14 @@ impl Gui {
         row_text(
             ui,
             &preview,
-            egui::pos2(text_left, rect.top() + 44.),
+            egui::pos2(text_left, rect.top() + 50.),
             right - text_left - 18.,
             14.,
             p.muted,
         );
         if chat.unread {
             ui.painter()
-                .circle_filled(egui::pos2(right - 4., rect.top() + 53.), 4., p.blue);
+                .circle_filled(egui::pos2(right - 4., rect.top() + 59.), 4., p.blue);
         }
         ui.painter().line_segment(
             [
