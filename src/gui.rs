@@ -514,7 +514,11 @@ impl Gui {
         }
         let avatar_rect =
             egui::Rect::from_min_size(rect.min + egui::vec2(9., 23.), Vec2::splat(44.));
-        ui.scope_builder(egui::UiBuilder::new().max_rect(avatar_rect), |ui| {
+        // The row already owns its layout space. Avatar children must not
+        // advance the parent cursor back into that reserved row.
+        {
+            let mut avatar_ui = ui.new_child(egui::UiBuilder::new().max_rect(avatar_rect));
+            let ui = &mut avatar_ui;
             if chat.direct || chat.contact_ids.is_empty() {
                 self.avatar(
                     ui,
@@ -535,12 +539,11 @@ impl Gui {
                     ][index];
                     let cell =
                         egui::Rect::from_min_size(avatar_rect.min + offset, Vec2::splat(25.));
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(cell), |ui| {
-                        self.avatar(ui, Some(id), &chat.title, 25., p);
-                    });
+                    let mut cell_ui = ui.new_child(egui::UiBuilder::new().max_rect(cell));
+                    self.avatar(&mut cell_ui, Some(id), &chat.title, 25., p);
                 }
             }
-        });
+        }
         let badge = egui::Rect::from_center_size(
             avatar_rect.right_bottom() - egui::vec2(2., 2.),
             Vec2::splat(20.),
@@ -2395,6 +2398,27 @@ mod tests {
                 assert_eq!(target_chat.id, chat.id);
                 assert_eq!(target_message.id, message.id);
             }
+        }
+    }
+    #[test]
+    fn conversation_avatar_children_do_not_overlap_following_rows() {
+        for contacts in [vec![], vec!["one".into(), "two".into(), "three".into()]] {
+            let ctx = egui::Context::default();
+            let mut gui = Gui::new(App::new(None, true), &ctx);
+            let mut chat = gui.app.active.clone().unwrap();
+            chat.direct = false;
+            chat.contact_ids = contacts;
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let p = gui.theme.palette();
+                    let first = gui.conversation_row(ui, &chat, p).rect;
+                    let second = gui.conversation_row(ui, &chat, p).rect;
+                    assert!(
+                        second.top() >= first.bottom(),
+                        "{first:?} overlaps {second:?}"
+                    );
+                });
+            });
         }
     }
     #[test]
