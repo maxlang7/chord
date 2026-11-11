@@ -193,6 +193,8 @@ pub struct App {
     pub status: Value,
     pub connections: Value,
     pending_read: Option<String>,
+    opening_unread: Option<(Option<i64>, usize)>,
+    pub first_unread: Option<String>,
     read_tx: Option<UnboundedSender<(String, u64, bool)>>,
     read_revision: u64,
     read_overrides: HashMap<String, ReadOverride>,
@@ -283,6 +285,8 @@ impl App {
             status: Value::Null,
             connections: Value::Null,
             pending_read: None,
+            opening_unread: None,
+            first_unread: None,
             read_revision: 0,
             read_overrides: HashMap::new(),
             read_tx,
@@ -639,6 +643,10 @@ impl App {
         }
     }
     pub fn open(&mut self, c: Conversation) {
+        self.first_unread = None;
+        self.opening_unread = c
+            .unread
+            .then_some((c.local_read_at.filter(|t| *t > 0), c.unread_count.max(1)));
         self.remember_messages();
         let cached = self.message_cache.get(&c.id).cloned();
         if let Some(old) = &self.active {
@@ -686,6 +694,38 @@ impl App {
             self.set_read_state(true);
         }
         self.load_messages(false);
+    }
+    fn locate_first_unread(&mut self) {
+        let Some((after, count)) = self.opening_unread else {
+            return;
+        };
+        if self.messages.is_empty() {
+            return;
+        }
+        let need_older = if let Some(after) = after {
+            self.messages
+                .first()
+                .and_then(|m| chrono::DateTime::parse_from_rfc3339(&m.timestamp).ok())
+                .is_some_and(|time| time.timestamp_millis() > after)
+        } else {
+            self.messages.len() < count
+        };
+        if need_older && self.message_cursor.is_some() {
+            self.load_messages(true);
+            return;
+        }
+        let index = after
+            .and_then(|after| {
+                self.messages.iter().position(|m| {
+                    !m.is_sender
+                        && chrono::DateTime::parse_from_rfc3339(&m.timestamp)
+                            .is_ok_and(|time| time.timestamp_millis() > after)
+                })
+            })
+            .unwrap_or_else(|| self.messages.len().saturating_sub(count));
+        self.message_selection = index;
+        self.first_unread = self.messages.get(index).map(|m| m.id.clone());
+        self.opening_unread = None;
     }
     pub fn open_thread(&mut self, message: &Message) {
         let Some(mut chat) = self.active.clone() else {
@@ -1319,6 +1359,9 @@ impl App {
                                 if self.pending_read.as_ref() == Some(&id) {
                                     self.set_read_state(true);
                                 }
+                                if v["_cache"]["refreshing"] != true {
+                                    self.locate_first_unread();
+                                }
                             }
                         }
                         Err(e) => self.notice = e,
@@ -1919,6 +1962,73 @@ fn base64_encode(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unread_opening_keeps_previous_boundary_after_optimistic_read() {
+        let mut app = App::new(None, true);
+        let mut chat = app.active.clone().unwrap();
+        chat.unread = true;
+        chat.local_read_at = Some(
+            chrono::DateTime::parse_from_rfc3339("2026-11-11T10:00:00Z")
+                .unwrap()
+                .timestamp_millis(),
+        );
+        app.open(chat);
+        assert!(!app.active.as_ref().unwrap().unread);
+        app.messages = serde_json::from_value(json!([
+            {"id":"read","timestamp":"2026-11-11T09:59:00Z"},
+            {"id":"mine","timestamp":"2026-11-11T10:00:30Z","isSender":true},
+            {"id":"first-new","timestamp":"2026-11-11T10:01:00Z"},
+            {"id":"later","timestamp":"2026-11-11T10:02:00Z"}
+        ]))
+        .unwrap();
+        app.locate_first_unread();
+        assert_eq!(app.first_unread.as_deref(), Some("first-new"));
+        assert_eq!(app.message_selection, 2);
+        app.first_unread.take();
+        app.locate_first_unread();
+        assert!(
+            app.first_unread.is_none(),
+            "background refresh must not jump again"
+        );
+    }
+    #[test]
+    fn unread_opening_loads_back_to_the_boundary_and_falls_back_to_counts() {
+        let mut app = App::new(None, true);
+        app.opening_unread = Some((Some(1000), 1));
+        app.messages = vec![Message {
+            id: "new".into(),
+            timestamp: "1970-01-01T00:00:02Z".into(),
+            ..Default::default()
+        }];
+        app.message_cursor = Some("older".into());
+        app.locate_first_unread();
+        assert!(app.first_unread.is_none());
+        assert!(app.opening_unread.is_some());
+        app.message_cursor = None;
+        app.locate_first_unread();
+        assert_eq!(app.first_unread.as_deref(), Some("new"));
+        app.first_unread = None;
+        app.opening_unread = Some((None, 3));
+        app.message_cursor = Some("older".into());
+        app.locate_first_unread();
+        assert!(app.first_unread.is_none());
+        app.messages.insert(
+            0,
+            Message {
+                id: "first".into(),
+                ..Default::default()
+            },
+        );
+        app.messages.insert(
+            1,
+            Message {
+                id: "second".into(),
+                ..Default::default()
+            },
+        );
+        app.locate_first_unread();
+        assert_eq!(app.first_unread.as_deref(), Some("first"));
+    }
     #[test]
     fn stale_inbox_cannot_restore_unread_but_new_messages_can_after_sync() {
         let mut app = App::new(None, true);

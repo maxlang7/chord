@@ -16,6 +16,8 @@ pub struct Conversation {
     pub server_name: Option<String>,
     pub kind: String,
     pub unread: bool,
+    pub unread_count: usize,
+    pub local_read_at: Option<i64>,
     #[serde(rename = "threadRootID")]
     pub thread_root_id: Option<String>,
     pub parent_conversation_id: Option<String>,

@@ -28,6 +28,7 @@ pub struct Gui {
     profile_id: String,
     settings_path: PathBuf,
     scroll_to: Option<String>,
+    unread_marker: Option<String>,
     search_focus: bool,
     message_search: bool,
     reaction_target: Option<(Conversation, Message)>,
@@ -80,6 +81,7 @@ impl Gui {
             profile_id: String::new(),
             settings_path,
             scroll_to: None,
+            unread_marker: None,
             search_focus: false,
             message_search: false,
             reaction_target: None,
@@ -130,6 +132,7 @@ impl Gui {
         self.app.mode = Mode::Browse;
         self.app.open(chat);
         self.scroll_to = None;
+        self.unread_marker = None;
     }
     fn sidebar(&mut self, ctx: &egui::Context, p: Palette) {
         let compact = ctx.content_rect().width() < 1000.;
@@ -800,10 +803,23 @@ impl Gui {
                     .show_inside(ui, |ui| {
                         self.composer(ui, &chat, p);
                     });
+                if let Some(id) = self.app.first_unread.take() {
+                    if let Some(root) = self
+                        .app
+                        .messages
+                        .iter()
+                        .find(|m| m.id == id)
+                        .and_then(|m| m.thread_root_id.clone())
+                    {
+                        self.expanded_thread = Some((chat.id.clone(), root));
+                    }
+                    self.unread_marker = Some(id.clone());
+                    self.scroll_to = Some(id);
+                }
                 egui::ScrollArea::vertical()
                     .id_salt(("thread", &chat.id))
                     .auto_shrink([false, false])
-                    .stick_to_bottom(true)
+                    .stick_to_bottom(self.scroll_to.is_none())
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         if self.app.message_cursor.is_some()
@@ -843,6 +859,21 @@ impl Gui {
                                     ui.separator();
                                 });
                                 ui.add_space(8.);
+                            }
+                            if self.unread_marker.as_ref() == Some(&message.id) {
+                                let divider = ui
+                                    .horizontal(|ui| {
+                                        ui.separator();
+                                        ui.label(
+                                            RichText::new("New messages").small().color(p.accent),
+                                        );
+                                        ui.separator();
+                                    })
+                                    .response;
+                                if self.scroll_to.as_ref() == Some(&message.id) {
+                                    divider.scroll_to_me(Some(egui::Align::TOP));
+                                    self.scroll_to = None;
+                                }
                             }
                             if message.thread_root_id.is_some() {
                                 let reply = egui::Frame::new()
@@ -2496,6 +2527,47 @@ mod tests {
                 });
             });
         }
+    }
+    #[test]
+    fn unread_opening_scrolls_to_the_divider_instead_of_sticking_to_latest() {
+        let ctx = egui::Context::default();
+        let mut gui = Gui::new(App::new(None, true), &ctx);
+        gui.app.messages = (0..20)
+            .map(|i| Message {
+                id: format!("m{i}"),
+                text: format!("Message {i}"),
+                sender_name: "Sam".into(),
+                timestamp: "2026-11-11T10:00:00Z".into(),
+                ..Default::default()
+            })
+            .collect();
+        gui.app.first_unread = Some("m5".into());
+        let mut divider_y = None;
+        for frame in 0..5 {
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1240., 820.),
+                    )),
+                    time: Some(frame as f64),
+                    ..Default::default()
+                },
+                |ctx| gui.thread(ctx, gui.theme.palette()),
+            );
+            divider_y = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "New messages" => {
+                    Some(text.pos.y)
+                }
+                _ => None,
+            });
+        }
+        let y = divider_y.expect("unread divider is rendered");
+        assert!(
+            (50.0..200.0).contains(&y),
+            "divider should be near the top, got {y}"
+        );
+        assert!(gui.scroll_to.is_none(), "jump is consumed once");
     }
     #[test]
     fn native_layout_renders_at_normal_and_compact_sizes() {
