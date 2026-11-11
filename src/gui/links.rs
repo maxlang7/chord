@@ -61,7 +61,7 @@ pub fn text(ui: &mut egui::Ui, text: &str) -> bool {
     job.wrap.max_width = ui.available_width();
     let mut offset = 0;
     for (range, _) in &links {
-        job.append(&text[offset..range.start], 0., normal.clone());
+        super::emoji::append(&mut job, &text[offset..range.start], normal.clone());
         job.append(
             &text[range.clone()],
             0.,
@@ -74,9 +74,10 @@ pub fn text(ui: &mut egui::Ui, text: &str) -> bool {
         );
         offset = range.end;
     }
-    job.append(&text[offset..], 0., normal);
+    super::emoji::append(&mut job, &text[offset..], normal);
     let galley = ui.fonts_mut(|fonts| fonts.layout_job(job.clone()));
     let response = ui.add(egui::Label::new(job).wrap().selectable(true));
+    super::emoji::paint(ui, &galley, response.rect.min);
     if let Some(pos) = response.hover_pos() {
         let local = pos - response.rect.min;
         if local.x <= galley.size().x && local.y <= galley.size().y {

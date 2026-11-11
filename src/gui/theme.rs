@@ -29,9 +29,9 @@ impl Theme {
                 text: rgb(235, 219, 178),
                 muted: rgb(168, 153, 132),
                 line: rgb(70, 66, 60),
-                accent: rgb(184, 187, 38),
-                blue: rgb(131, 165, 152),
-                own: rgb(48, 53, 43),
+                accent: rgb(91, 202, 177),
+                blue: rgb(126, 174, 239),
+                own: rgb(34, 60, 55),
             },
             Self::Dark => Palette {
                 bg: rgb(22, 24, 28),
@@ -103,4 +103,42 @@ impl Theme {
             Self::Light => "Light",
         }
     }
+}
+
+pub fn service_color(source: usize) -> Color32 {
+    let (r, g, b) = match source {
+        1 => (192, 139, 229),
+        2 => (130, 148, 255),
+        3 => (85, 199, 131),
+        4 => (85, 195, 216),
+        5 => (239, 180, 96),
+        6 => (240, 133, 143),
+        _ => (91, 202, 177),
+    };
+    Color32::from_rgb(r, g, b)
+}
+pub fn avatar_color(name: &str) -> Color32 {
+    let palette = [
+        (90, 155, 208),
+        (157, 117, 211),
+        (211, 116, 137),
+        (199, 149, 73),
+        (72, 167, 145),
+        (90, 160, 170),
+        (190, 118, 84),
+        (111, 148, 207),
+    ];
+    let hash = name.bytes().fold(0_usize, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(byte as usize)
+    });
+    let (r, g, b) = palette[hash % palette.len()];
+    Color32::from_rgb(r, g, b)
+}
+pub fn tint(base: Color32, accent: Color32, amount: f32) -> Color32 {
+    let mix = |a: u8, b: u8| (a as f32 * (1. - amount) + b as f32 * amount) as u8;
+    Color32::from_rgb(
+        mix(base.r(), accent.r()),
+        mix(base.g(), accent.g()),
+        mix(base.b(), accent.b()),
+    )
 }

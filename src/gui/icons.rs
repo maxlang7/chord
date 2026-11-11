@@ -110,8 +110,15 @@ pub fn button(
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), 38.), egui::Sense::click());
     if selected || response.hovered() {
-        ui.painter()
-            .rect_filled(rect, 9., if selected { p.raised } else { p.panel });
+        ui.painter().rect_filled(
+            rect,
+            9.,
+            if selected {
+                super::theme::tint(p.panel, super::theme::service_color(source), 0.18)
+            } else {
+                p.panel
+            },
+        );
     }
     let origin = if compact {
         rect.center() - Vec2::splat(12.)
@@ -122,7 +129,11 @@ pub fn button(
         ui.painter(),
         Rect::from_min_size(origin, Vec2::splat(24.)),
         source,
-        if selected { p.accent } else { p.text },
+        if selected {
+            super::theme::service_color(source)
+        } else {
+            p.text
+        },
     );
     if !compact {
         ui.painter().text(
@@ -130,7 +141,11 @@ pub fn button(
             egui::Align2::LEFT_CENTER,
             label,
             egui::FontId::proportional(14.),
-            if selected { p.accent } else { p.text },
+            if selected {
+                super::theme::service_color(source)
+            } else {
+                p.text
+            },
         );
     }
     response.widget_info(|| {

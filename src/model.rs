@@ -126,7 +126,7 @@ pub fn demo() -> (Vec<Conversation>, Vec<Message>) {
         (
             "slack",
             "# teaching",
-            "Victoria · Can you review the session plan?",
+            "Victoria · Can you review the session plan? 🎉",
             true,
         ),
         (
@@ -180,7 +180,7 @@ pub fn demo() -> (Vec<Conversation>, Vec<Message>) {
     let messages = vec![
         Message{id:"demo-1".into(),sender_name:"Victoria".into(),timestamp:now.clone(),text:"I've put together the plan for next week's review.\n\nCould you take a look at the examples before we share it?".into(),..Default::default()},
         Message{id:"demo-2".into(),sender_name:"You".into(),is_sender:true,timestamp:now.clone(),text:"Sure. The first example looks good. Let's leave a little more time for questions.".into(),reactions:vec![serde_json::json!({"reactionKey":"👍","participantID":"demo-person"})],..Default::default()},
-        Message{id:"demo-3".into(),sender_name:"Victoria".into(),timestamp:now,text:"Sounds good. I'll update the timing.\n\nThanks for looking at it!".into(),linked_message_id:Some("demo-2".into()),..Default::default()},
+        Message{id:"demo-3".into(),sender_name:"Victoria".into(),timestamp:now,text:"Sounds good. I'll update the timing.\n\nThanks for looking at it! 🎉 ❤️ 👍🏽 🇺🇸 👩‍💻".into(),linked_message_id:Some("demo-2".into()),..Default::default()},
     ];
     (chats, messages)
 }

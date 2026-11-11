@@ -1,3 +1,4 @@
+mod emoji;
 mod icons;
 mod links;
 mod media;
@@ -45,6 +46,9 @@ impl Gui {
                 "../assets/NotoEmoji.ttf"
             ))),
         );
+        fonts
+            .families
+            .insert(egui::FontFamily::Name("emoji".into()), vec!["emoji".into()]);
         for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
             fonts
                 .families
@@ -485,11 +489,27 @@ impl Gui {
             return response;
         }
         let active = self.app.active.as_ref().is_some_and(|c| c.id == chat.id);
+        let source_index = crate::model::SOURCES
+            .iter()
+            .position(|(id, _, _)| *id == chat.source)
+            .unwrap_or(0);
+        let color = theme::service_color(source_index);
         if active || response.hovered() {
             ui.painter().rect_filled(
                 rect.shrink2(egui::vec2(0., 3.)),
                 8.,
-                if active { p.raised } else { p.bg },
+                if active {
+                    theme::tint(p.panel, color, 0.18)
+                } else {
+                    theme::tint(p.panel, color, 0.06)
+                },
+            );
+        }
+        if active {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(rect.min + egui::vec2(0., 15.), egui::vec2(3., 52.)),
+                2.,
+                color,
             );
         }
         let avatar_rect =
@@ -525,7 +545,8 @@ impl Gui {
             avatar_rect.right_bottom() - egui::vec2(2., 2.),
             Vec2::splat(20.),
         );
-        ui.painter().circle_filled(badge.center(), 11., p.panel);
+        ui.painter()
+            .circle_filled(badge.center(), 11., theme::tint(p.panel, color, 0.22));
         let source = crate::model::SOURCES
             .iter()
             .position(|(id, _, _)| *id == chat.source)
@@ -609,18 +630,18 @@ impl Gui {
         contact: Option<&str>,
         name: &str,
         size: f32,
-        p: Palette,
+        _p: Palette,
     ) -> egui::Response {
         let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::click());
         ui.painter()
-            .circle_filled(rect.center(), size / 2., p.raised);
+            .circle_filled(rect.center(), size / 2., theme::avatar_color(name));
         let initials = initials(name);
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             initials,
             egui::FontId::proportional(size * 0.34),
-            p.blue,
+            Color32::WHITE,
         );
         if ui.is_rect_visible(rect)
             && let Some(id) = contact
@@ -870,19 +891,23 @@ impl Gui {
                             ui.vertical(|ui| {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal(|ui| {
-                                    if ui
-                                        .add_sized(
-                                            egui::vec2((ui.available_width() - 112.).max(24.), 22.),
-                                            egui::Label::new(
-                                                RichText::new(&m.sender_name).strong().color(
-                                                    if m.is_sender { p.accent } else { p.text },
-                                                ),
-                                            )
-                                            .halign(egui::Align::LEFT)
-                                            .sense(egui::Sense::click())
-                                            .truncate(),
-                                        )
-                                        .clicked()
+                                    let (name_rect, name_response) = ui.allocate_exact_size(
+                                        egui::vec2((ui.available_width() - 112.).max(24.), 22.),
+                                        egui::Sense::click(),
+                                    );
+                                    row_text(
+                                        ui,
+                                        &m.sender_name,
+                                        name_rect.min + egui::vec2(0., 2.),
+                                        name_rect.width(),
+                                        14.,
+                                        if m.is_sender {
+                                            p.accent
+                                        } else {
+                                            theme::avatar_color(&m.sender_name)
+                                        },
+                                    );
+                                    if name_response.clicked()
                                         && let Some(id) = &m.sender_contact_id
                                     {
                                         self.app.open_contact(json!({"id":id}));
@@ -1091,7 +1116,7 @@ impl Gui {
                                             if ui
                                                 .add_enabled(
                                                     chat.can_react,
-                                                    egui::Button::new(format!("{key}  {count}"))
+                                                    emoji::button(ui, &key, &count.to_string())
                                                         .fill(if mine { p.own } else { p.raised })
                                                         .corner_radius(10),
                                                 )
@@ -1190,10 +1215,7 @@ impl Gui {
                                 && r["participantID"].is_string()
                                 && r["participantID"] == self.app.status["userID"]
                         });
-                        if ui
-                            .selectable_label(mine, RichText::new(*key).size(24.))
-                            .clicked()
-                        {
+                        if ui.add(emoji::button(ui, key, "").selected(mine)).clicked() {
                             self.react(&chat, &message, key, mine);
                             picked = true;
                         }
@@ -1209,7 +1231,7 @@ impl Gui {
             ui.set_max_width(260.);
             ui.horizontal_wrapped(|ui| {
                 for key in REACTIONS {
-                    if ui.button(RichText::new(*key).size(22.)).clicked() {
+                    if ui.add(emoji::button(ui, key, "")).clicked() {
                         self.react(chat, m, key, false);
                         ui.close();
                     }
@@ -1314,24 +1336,43 @@ impl Gui {
             .inner_margin(12)
             .show(ui, |ui| {
                 let before = self.app.editor.text.clone();
-                let response = ui.add_enabled(
-                    enabled,
-                    egui::TextEdit::multiline(&mut self.app.editor.text)
-                        .hint_text(if enabled {
-                            "Write a message…"
-                        } else if chat.kind == "archive" {
-                            "Local archive is read only"
-                        } else {
-                            "Sending is unavailable for this conversation"
-                        })
-                        .desired_rows(2)
-                        .desired_width(f32::INFINITY)
-                        .frame(false)
-                        .return_key(egui::KeyboardShortcut::new(
-                            egui::Modifiers::SHIFT,
-                            egui::Key::Enter,
-                        )),
-                );
+                let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width: f32| {
+                    let mut job = egui::text::LayoutJob::default();
+                    job.wrap.max_width = width;
+                    emoji::append(
+                        &mut job,
+                        text.as_str(),
+                        egui::TextFormat {
+                            font_id: egui::TextStyle::Body.resolve(ui.style()),
+                            color: ui.visuals().text_color(),
+                            ..Default::default()
+                        },
+                    );
+                    ui.fonts_mut(|fonts| fonts.layout_job(job))
+                };
+                let edit = ui
+                    .add_enabled_ui(enabled, |ui| {
+                        egui::TextEdit::multiline(&mut self.app.editor.text)
+                            .hint_text(if enabled {
+                                "Write a message…"
+                            } else if chat.kind == "archive" {
+                                "Local archive is read only"
+                            } else {
+                                "Sending is unavailable for this conversation"
+                            })
+                            .desired_rows(2)
+                            .desired_width(f32::INFINITY)
+                            .frame(false)
+                            .layouter(&mut layouter)
+                            .return_key(egui::KeyboardShortcut::new(
+                                egui::Modifiers::SHIFT,
+                                egui::Key::Enter,
+                            ))
+                            .show(ui)
+                    })
+                    .inner;
+                emoji::paint_clipped(ui, &edit.galley, edit.galley_pos, edit.text_clip_rect);
+                let response = edit.response;
                 self.app.editor.cursor = self.app.editor.text.len();
                 if response.changed() && self.app.mode == Mode::Browse {
                     self.app.mode = Mode::Compose;
@@ -2107,16 +2148,23 @@ impl eframe::App for Gui {
 // Keep loaded Slack replies beside their parent while retaining their original
 // indices for reply, reaction, and edit actions. Orphan replies remain visible.
 fn row_text(ui: &egui::Ui, text: &str, pos: egui::Pos2, width: f32, size: f32, color: Color32) {
-    let mut job = egui::text::LayoutJob::simple_singleline(
-        text.into(),
-        egui::FontId::proportional(size),
-        color,
+    let mut colored = egui::text::LayoutJob::default();
+    emoji::append(
+        &mut colored,
+        text,
+        egui::TextFormat {
+            font_id: egui::FontId::proportional(size),
+            color,
+            ..Default::default()
+        },
     );
+    let mut job = colored;
     job.wrap.max_width = width.max(1.);
     job.wrap.max_rows = 1;
     job.wrap.break_anywhere = true;
     let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
-    ui.painter().galley(pos, galley, color);
+    ui.painter().galley(pos, galley.clone(), color);
+    emoji::paint(ui, &galley, pos);
 }
 
 fn message_order(messages: &[Message], group_threads: bool) -> Vec<usize> {
@@ -2355,6 +2403,7 @@ mod tests {
             let ctx = egui::Context::default();
             let mut gui = Gui::new(App::new(None, true), &ctx);
             gui.app.active.as_mut().unwrap().source = "slack".into();
+            gui.app.editor.set("Draft 🎉 👩‍💻 🇺🇸 👍🏽".into());
             gui.app.messages[1].thread_root_id = Some(gui.app.messages[0].id.clone());
             let output = ctx.run(
                 egui::RawInput {

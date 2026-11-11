@@ -256,3 +256,9 @@ caches and credentials are plaintext under an owner-only private directory.
 Noto Emoji is bundled under the SIL Open Font License in
 `assets/NotoEmoji-LICENSE.txt`. Pinned Pickle and ai-bridge sources retain their
 upstream licenses. Their use as libraries does not require the Beeper service.
+
+Color emoji artwork is bundled from [Twemoji 17.0.3](https://github.com/jdecked/twemoji/releases/tag/v17.0.3),
+by Twitter and other contributors, under CC BY 4.0. See
+`assets/Twemoji-LICENSE.txt`. The artwork is resized and packed into an offline
+atlas by `scripts/build-emoji-atlas.py`; viewing messages never fetches emoji
+from a third-party server. Noto Emoji remains the fallback for unsupported glyphs.
