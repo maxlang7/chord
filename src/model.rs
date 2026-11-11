@@ -8,6 +8,7 @@ pub struct Conversation {
     pub remote_id: String,
     pub title: String,
     pub preview: String,
+    pub preview_sender_name: String,
     pub timestamp: String,
     pub source: String,
     #[serde(rename = "serverID")]

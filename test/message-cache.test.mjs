@@ -26,8 +26,9 @@ test('conversation activity follows its newest message despite an older room sna
  const p=new MatrixProvider({}, {userId:'@me:chord.local'}, {save:false});
  p.lastRoomRefresh=Date.now();
  p.chats.set('!room',{id:'!room',accountID:'discord',title:'Important',lastActivity:'2026-11-09T16:56:48Z'});
- p.timelines.set('!room',[{id:'$new',timestamp:'2026-11-10T01:51:07Z',text:'New message'}]);
+ p.timelines.set('!room',[{id:'$new',timestamp:'2026-11-10T01:51:07Z',text:'New message',senderName:'Sam'}]);
  const result=await p.request('/v1/chats');
  assert.equal(result.items[0].lastActivity,'2026-11-10T01:51:07.000Z');
  assert.equal(result.items[0].preview.text,'New message');
+ assert.equal(result.items[0].preview.senderName,'Sam');
 });

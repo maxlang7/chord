@@ -343,8 +343,8 @@ impl Gui {
     }
     fn inbox(&mut self, ctx: &egui::Context, p: Palette) {
         egui::SidePanel::left("conversations")
-            .default_width(306.)
-            .width_range(235. ..=410.)
+            .default_width(360.)
+            .width_range(260. ..=480.)
             .frame(
                 egui::Frame::new()
                     .fill(p.panel)
@@ -454,88 +454,11 @@ impl Gui {
                             self.app.refresh(false);
                         }
                         for (chat_index, chat) in chats.iter().enumerate() {
-                            let active = self.app.active.as_ref().is_some_and(|c| c.id == chat.id);
-                            let row = egui::Frame::new()
-                                .fill(if active {
-                                    p.raised
-                                } else {
-                                    Color32::TRANSPARENT
-                                })
-                                .corner_radius(10)
-                                .inner_margin(10)
-                                .show(ui, |ui| {
-                                    ui.set_min_width(ui.available_width());
-                                    ui.horizontal(|ui| {
-                                        let photo = chat
-                                            .contact_ids
-                                            .first()
-                                            .map(String::as_str)
-                                            .filter(|_| chat.direct);
-                                        let response = self.avatar(ui, photo, &chat.title, 36., p);
-                                        if response.clicked() {
-                                            self.choose_chat(chat.clone());
-                                ctx.request_repaint();
-                                        }
-                                        ui.vertical(|ui| {
-                                            ui.set_max_width((ui.available_width() - 12.).max(50.));
-                                            ui.horizontal(|ui| {
-                                                ui.add(
-                                                    egui::Label::new(
-                                                        (if chat.unread {
-                                                            RichText::new(one_line(&chat.title)).strong()
-                                                        } else {
-                                                            RichText::new(one_line(&chat.title))
-                                                        })
-                                                            .color(if active {
-                                                                p.accent
-                                                            } else {
-                                                                p.text
-                                                            }),
-                                                    )
-                                                    .truncate(),
-                                                );
-                                                if chat.unread {
-                                                    let (rect, _) = ui.allocate_exact_size(egui::vec2(8., 8.), egui::Sense::hover());
-                                                    ui.painter().circle_filled(rect.center(), 3., p.accent);
-                                                }
-                                            });
-                                            ui.add(
-                                                egui::Label::new(
-                                                    RichText::new(one_line(&chat.preview))
-                                                        .size(12.)
-                                                        .color(p.muted),
-                                                )
-                                                .truncate(),
-                                            );
-                                            ui.add(
-                                                egui::Label::new(
-                                                    RichText::new(format!(
-                                                        "{}  ·  {}",
-                                                        source_label(&chat.source),
-                                                        time_label(&chat.timestamp)
-                                                    ))
-                                                    .size(10.)
-                                                    .color(p.muted),
-                                                )
-                                                .truncate(),
-                                            );
-                                        });
-                                    });
-                                });
-                            if ui
-                                .interact(
-                                    row.response.rect,
-                                    ui.id().with(&chat.id),
-                                    egui::Sense::click(),
-                                )
-                                .on_hover_text(chat.importance["reasons"].as_array().map(|v| v.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("\n")).unwrap_or_default())
-                                .clicked()
-                            {
+                            if self.conversation_row(ui, chat, p).clicked() {
                                 self.app.selection = chat_index;
                                 self.choose_chat(chat.clone());
                                 ctx.request_repaint();
                             }
-                            ui.add_space(3.);
                         }
                         if !self.app.inbox_cursors.is_null()
                             && self
@@ -549,6 +472,136 @@ impl Gui {
                         }
                     });
             });
+    }
+    fn conversation_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        chat: &Conversation,
+        p: Palette,
+    ) -> egui::Response {
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 82.), egui::Sense::click());
+        if !ui.is_rect_visible(rect) {
+            return response;
+        }
+        let active = self.app.active.as_ref().is_some_and(|c| c.id == chat.id);
+        if active || response.hovered() {
+            ui.painter().rect_filled(
+                rect.shrink2(egui::vec2(0., 3.)),
+                8.,
+                if active { p.raised } else { p.bg },
+            );
+        }
+        let avatar_rect =
+            egui::Rect::from_min_size(rect.min + egui::vec2(9., 17.), Vec2::splat(44.));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(avatar_rect), |ui| {
+            if chat.direct || chat.contact_ids.is_empty() {
+                self.avatar(
+                    ui,
+                    chat.contact_ids
+                        .first()
+                        .map(String::as_str)
+                        .filter(|_| chat.direct),
+                    &chat.title,
+                    44.,
+                    p,
+                );
+            } else {
+                for (index, id) in chat.contact_ids.iter().take(3).enumerate() {
+                    let offset = [
+                        egui::vec2(0., 0.),
+                        egui::vec2(20., 0.),
+                        egui::vec2(10., 20.),
+                    ][index];
+                    let cell =
+                        egui::Rect::from_min_size(avatar_rect.min + offset, Vec2::splat(25.));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(cell), |ui| {
+                        self.avatar(ui, Some(id), &chat.title, 25., p);
+                    });
+                }
+            }
+        });
+        let badge = egui::Rect::from_center_size(
+            avatar_rect.right_bottom() - egui::vec2(2., 2.),
+            Vec2::splat(20.),
+        );
+        ui.painter().circle_filled(badge.center(), 11., p.panel);
+        let source = crate::model::SOURCES
+            .iter()
+            .position(|(id, _, _)| *id == chat.source)
+            .unwrap_or(0);
+        icons::service(ui.painter(), badge.shrink(3.), source, p.text);
+        let text_left = rect.left() + 67.;
+        let right = rect.right() - 9.;
+        let stamp = time_label(&chat.timestamp);
+        let stamp_font = egui::FontId::proportional(11.);
+        let stamp_width = ui
+            .painter()
+            .layout_no_wrap(stamp.clone(), stamp_font.clone(), p.muted)
+            .size()
+            .x;
+        ui.painter().text(
+            egui::pos2(right, rect.top() + 19.),
+            egui::Align2::RIGHT_TOP,
+            stamp,
+            stamp_font,
+            p.muted,
+        );
+        let context = chat
+            .server_name
+            .as_deref()
+            .unwrap_or_else(|| source_label(&chat.source));
+        let title = if chat.direct {
+            chat.title.clone()
+        } else {
+            format!("{} · {context}", chat.title)
+        };
+        row_text(
+            ui,
+            &title,
+            egui::pos2(text_left, rect.top() + 18.),
+            (right - text_left - stamp_width - 12.).max(28.),
+            16.,
+            p.text,
+        );
+        let preview = if chat.preview_sender_name.is_empty() {
+            one_line(&chat.preview)
+        } else {
+            format!("{}: {}", chat.preview_sender_name, one_line(&chat.preview))
+        };
+        row_text(
+            ui,
+            &preview,
+            egui::pos2(text_left, rect.top() + 44.),
+            right - text_left - 18.,
+            14.,
+            p.muted,
+        );
+        if chat.unread {
+            ui.painter()
+                .circle_filled(egui::pos2(right - 4., rect.top() + 53.), 4., p.blue);
+        }
+        ui.painter().line_segment(
+            [
+                egui::pos2(text_left, rect.bottom() - 1.),
+                egui::pos2(right, rect.bottom() - 1.),
+            ],
+            egui::Stroke::new(0.5_f32, p.line),
+        );
+        // Avatar cells are visual parts of this row, not separate navigation.
+        let clicked_avatar = ui.input(|input| {
+            input.pointer.button_clicked(egui::PointerButton::Primary)
+                && input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|pos| avatar_rect.contains(pos))
+        }) && ui.ctx().layer_id_at(avatar_rect.center())
+            == Some(ui.layer_id());
+        if clicked_avatar {
+            self.choose_chat(chat.clone());
+            ui.ctx().request_repaint();
+        }
+        response.on_hover_text(format!("{}\n{}", chat.title, context))
     }
     fn avatar(
         &mut self,
@@ -818,14 +871,16 @@ impl Gui {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal(|ui| {
                                     if ui
-                                        .add(
-                                            egui::Button::new(
+                                        .add_sized(
+                                            egui::vec2((ui.available_width() - 112.).max(24.), 22.),
+                                            egui::Label::new(
                                                 RichText::new(&m.sender_name).strong().color(
                                                     if m.is_sender { p.accent } else { p.text },
                                                 ),
                                             )
-                                            .frame(false)
-                                            .small(),
+                                            .halign(egui::Align::LEFT)
+                                            .sense(egui::Sense::click())
+                                            .truncate(),
                                         )
                                         .clicked()
                                         && let Some(id) = &m.sender_contact_id
@@ -854,6 +909,9 @@ impl Gui {
                                                     self.app.open_thread(m);
                                                     ui.close();
                                                 }
+                                                if chat.can_react {
+                                                    self.reaction_menu(ui, chat, m, p);
+                                                }
                                                 if ui.button("Copy message").clicked() {
                                                     ui.ctx().copy_text(m.text.clone());
                                                     ui.close();
@@ -879,23 +937,6 @@ impl Gui {
                                                     ui.close();
                                                 }
                                             });
-                                            if chat.can_react {
-                                                self.reaction_menu(ui, chat, m, p);
-                                            }
-                                            if chat.can_reply
-                                                && ui
-                                                    .add(
-                                                        egui::Button::new(
-                                                            RichText::new("↩").color(p.muted),
-                                                        )
-                                                        .frame(false)
-                                                        .small(),
-                                                    )
-                                                    .on_hover_text("Reply")
-                                                    .clicked()
-                                            {
-                                                self.reply_to(index);
-                                            }
                                         },
                                     );
                                 });
@@ -2065,6 +2106,19 @@ impl eframe::App for Gui {
 }
 // Keep loaded Slack replies beside their parent while retaining their original
 // indices for reply, reaction, and edit actions. Orphan replies remain visible.
+fn row_text(ui: &egui::Ui, text: &str, pos: egui::Pos2, width: f32, size: f32, color: Color32) {
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        text.into(),
+        egui::FontId::proportional(size),
+        color,
+    );
+    job.wrap.max_width = width.max(1.);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+    ui.painter().galley(pos, galley, color);
+}
+
 fn message_order(messages: &[Message], group_threads: bool) -> Vec<usize> {
     if !group_threads {
         return (0..messages.len()).collect();
@@ -2133,6 +2187,24 @@ pub fn run(app: App) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bundled_fonts_cover_message_and_reaction_emoji() {
+        let ctx = egui::Context::default();
+        let _gui = Gui::new(App::new(None, true), &ctx);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            ctx.fonts_mut(|fonts| {
+                for ch in "😀😂🥹🥰👍🏽❤️🎉✅🔥👀🙏🚀🫠🫡🩷🧑💻🇺🇸"
+                    .chars()
+                    .filter(|ch| *ch != '\u{fe0f}')
+                {
+                    assert!(
+                        fonts.has_glyph(&egui::FontId::proportional(18.), ch),
+                        "Missing emoji glyph: {ch}"
+                    );
+                }
+            });
+        });
+    }
     #[test]
     fn clicking_parent_expands_and_collapses_inline_thread() {
         let ctx = egui::Context::default();
