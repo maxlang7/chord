@@ -3,8 +3,14 @@ use crate::{
     images::{self, Decoded, Target},
 };
 use eframe::egui::{self, TextureHandle};
-use std::{collections::HashMap, time::Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+
+// Large phone photos can require hundreds of MB before resizing.
+static IMAGE_DECODES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 pub enum Request {
     Image(Target),
@@ -37,6 +43,7 @@ pub struct Media {
     pub cache: HashMap<String, Entry>,
     pub tx: UnboundedSender<Event>,
     rx: UnboundedReceiver<Event>,
+    retries: HashMap<String, (u8, Instant)>,
     pending: usize,
     pending_avatars: usize,
 }
@@ -47,6 +54,7 @@ impl Default for Media {
             cache: HashMap::new(),
             tx,
             rx,
+            retries: HashMap::new(),
             pending: 0,
             pending_avatars: 0,
         }
@@ -56,13 +64,21 @@ impl Media {
     pub fn request(&mut self, request: Request, api: Option<Api>, ctx: &egui::Context) {
         let key = request.key();
         let avatar = matches!(&request, Request::Avatar(_));
-        if self.cache.contains_key(&key)
+        let retry = matches!(self.cache.get(&key), Some(Entry::Failed(_)))
+            && self
+                .retries
+                .get(&key)
+                .is_some_and(|(attempts, after)| *attempts < 3 && Instant::now() >= *after);
+        if (self.cache.contains_key(&key) && !retry)
             || self.pending >= 8
             || (avatar && self.pending_avatars >= 2)
         {
             return;
         }
         let Some(api) = api else { return };
+        if !self.cache.contains_key(&key) {
+            self.retries.remove(&key);
+        }
         self.cache.insert(key.clone(), Entry::Loading);
         self.pending += 1;
         if avatar {
@@ -77,7 +93,9 @@ impl Media {
      Request::Avatar(id)=>api.get(&format!("/api/contacts/{}/avatar",urlencoding::encode(&id))).await?,
     };
     let encoded=value["data"].as_str().ok_or_else(||anyhow::anyhow!("No image data"))?.to_owned();
+    let permit = IMAGE_DECODES.acquire().await?;
     tokio::task::spawn_blocking(move||{
+        let _permit = permit;
         let mut decoded=images::decode(&encoded)?;
         let size=if avatar {128} else {1440};
         decoded.image=decoded.image.thumbnail(size,size);
@@ -103,6 +121,7 @@ impl Media {
                     }
                     match *result {
                         Ok(mut data) => {
+                            self.retries.remove(&key);
                             let rgba = data.image.to_rgba8();
                             let texture = ctx.load_texture(
                                 &key,
@@ -123,6 +142,16 @@ impl Media {
                             );
                         }
                         Err(error) => {
+                            let attempts =
+                                self.retries.get(&key).map_or(0, |(attempts, _)| *attempts) + 1;
+                            self.retries.insert(
+                                key.clone(),
+                                (
+                                    attempts,
+                                    Instant::now()
+                                        + Duration::from_secs(2_u64.pow(u32::from(attempts))),
+                                ),
+                            );
                             self.cache.insert(key, Entry::Failed(error));
                         }
                     }

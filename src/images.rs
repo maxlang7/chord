@@ -92,14 +92,14 @@ pub fn decode(data: &str) -> Result<Decoded> {
     let (width, height) = ImageReader::with_format(Cursor::new(&bytes), format)
         .into_dimensions()
         .context("Could not read image dimensions")?;
-    if u64::from(width) * u64::from(height) > 24_000_000 {
-        bail!("Image exceeds 24 megapixels");
+    if u64::from(width) * u64::from(height) > 64_000_000 {
+        bail!("Image exceeds 64 megapixels");
     }
     let mut reader = ImageReader::with_format(Cursor::new(&bytes), format);
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16384);
     limits.max_image_height = Some(16384);
-    limits.max_alloc = Some(96 * 1024 * 1024);
+    limits.max_alloc = Some(256 * 1024 * 1024);
     reader.limits(limits);
     let image = reader
         .decode()
@@ -175,6 +175,16 @@ pub fn save_bytes(bytes: &[u8], name: &str, extension: &str) -> Result<PathBuf> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn phone_photo_above_24_megapixels_is_resized_for_display() {
+        let image = DynamicImage::new_rgb8(4284, 5712);
+        let mut jpeg = Cursor::new(Vec::new());
+        image.write_to(&mut jpeg, image::ImageFormat::Jpeg).unwrap();
+        let decoded = decode(&URL_SAFE_NO_PAD.encode(jpeg.get_ref())).unwrap();
+        assert_eq!(decoded.dimensions, (4284, 5712));
+        assert!(decoded.image.width() <= 2048 && decoded.image.height() <= 2048);
+        assert_eq!(decoded.bytes, jpeg.into_inner());
+    }
     #[test]
     fn decode_sniffs_and_limits_untrusted_media() {
         let image = DynamicImage::new_rgb8(40, 20);
