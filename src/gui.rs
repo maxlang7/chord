@@ -1943,7 +1943,7 @@ impl Gui {
             self.app.mode = Mode::Browse;
         }
     }
-    fn gallery_window(&mut self, ctx: &egui::Context, p: Palette) {
+    fn gallery_window(&mut self, ctx: &egui::Context, _p: Palette) {
         if self.gallery.is_empty() {
             return;
         }
@@ -1960,77 +1960,134 @@ impl Gui {
         }
         let target = self.gallery[self.gallery_index].clone();
         let key = target.key();
-        let max = ctx.content_rect().size() - egui::vec2(120., 180.);
+        let screen = ctx.content_rect();
         let mut open = true;
-        egui::Window::new("Image")
-            .id(egui::Id::new("image-gallery"))
-            .open(&mut open)
-            .collapsible(false)
-            .default_size(egui::vec2(760., 600.))
+        egui::Modal::new(egui::Id::new("image-lightbox"))
+            .frame(egui::Frame::NONE)
+            .backdrop_color(Color32::from_black_alpha(242))
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(target.name()).strong());
-                    ui.label(
-                        RichText::new(format!(
-                            "{} / {}",
-                            self.gallery_index + 1,
-                            self.gallery.len()
-                        ))
-                        .small()
-                        .color(p.muted),
-                    );
-                });
-                self.image(
-                    ui,
-                    &target,
-                    egui::vec2(max.x.min(ui.available_width()), max.y.max(150.)),
-                    p,
+                ui.set_min_size(screen.size());
+                let background =
+                    ui.interact(screen, ui.id().with("dismiss-image"), egui::Sense::click());
+                let content = egui::Rect::from_min_max(
+                    screen.min + egui::vec2(64., 64.),
+                    screen.max - egui::vec2(64., 32.),
                 );
-                if let Some(Entry::Failed(error)) = self.media.cache.get(&key) {
-                    ui.colored_label(p.muted, error);
-                    if ui.button("Retry").clicked() {
-                        self.media.cache.remove(&key);
-                    }
-                }
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(self.gallery_index > 0, egui::Button::new("← Previous"))
-                        .clicked()
-                    {
-                        self.gallery_index = self.gallery_index.saturating_sub(1);
-                    }
-                    if ui
-                        .add_enabled(
-                            self.gallery_index + 1 < self.gallery.len(),
-                            egui::Button::new("Next →"),
-                        )
-                        .clicked()
-                    {
-                        self.gallery_index += 1;
-                    }
-                    for (label, brave) in [("Save original", false), ("Open in Brave", true)] {
-                        if ui.button(label).clicked() {
-                            if !brave {
-                                self.media.save_original(&target, ui.ctx());
-                                continue;
+                self.media
+                    .request(Request::Image(target.clone()), self.app.api.clone(), ctx);
+                let ready = matches!(self.media.cache.get(&key), Some(Entry::Ready { .. }));
+                let mut image_rect = egui::Rect::NOTHING;
+                if let Some(texture) = self.media.texture(&key) {
+                    let size = texture.size_vec2();
+                    let scale = (content.width() / size.x)
+                        .min(content.height() / size.y)
+                        .min(1.);
+                    image_rect = egui::Rect::from_center_size(content.center(), size * scale);
+                    egui::Image::new(&texture).paint_at(ui, image_rect);
+                } else {
+                    let mut loading = ui.new_child(egui::UiBuilder::new().max_rect(content));
+                    loading.centered_and_justified(|ui| {
+                        ui.vertical_centered(|ui| {
+                            if let Some(Entry::Failed(error)) = self.media.cache.get(&key) {
+                                ui.label(RichText::new(error).color(Color32::LIGHT_GRAY));
+                                if ui.button("Retry").clicked() {
+                                    self.media.cache.remove(&key);
+                                }
+                            } else {
+                                ui.spinner();
+                                ui.label("Loading image…");
                             }
-                            self.app.notice = match self.media.save(&target, brave) {
-                                Ok(file) => format!("Saved {}", file.display()),
-                                Err(e) => e,
-                            };
-                        }
+                        });
+                    });
+                }
+                if background.clicked()
+                    && background
+                        .interact_pointer_pos()
+                        .is_some_and(|pos| pos.y > screen.top() + 60. && !image_rect.contains(pos))
+                {
+                    open = false;
+                }
+                let toolbar = egui::Rect::from_min_max(
+                    screen.min + egui::vec2(20., 12.),
+                    egui::pos2(screen.right() - 16., screen.top() + 52.),
+                );
+                let mut bar = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(toolbar)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                let title_rect = egui::Rect::from_min_size(
+                    toolbar.min,
+                    egui::vec2((toolbar.width() - 145.).max(40.), 36.),
+                );
+                row_text(
+                    &bar,
+                    target.name(),
+                    title_rect.min + egui::vec2(0., 8.),
+                    title_rect.width(),
+                    16.,
+                    Color32::from_gray(235),
+                );
+                bar.allocate_rect(title_rect, egui::Sense::hover());
+                bar.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if icons::gallery_button(ui, icons::GalleryIcon::Close, "Close (Esc)").clicked()
+                    {
+                        open = false;
                     }
+                    ui.add_enabled_ui(ready, |ui| {
+                        if icons::gallery_button(ui, icons::GalleryIcon::External, "Open in Brave")
+                            .clicked()
+                            && let Err(error) = self.media.save(&target, true)
+                        {
+                            self.app.notice = error;
+                        }
+                        if icons::gallery_button(ui, icons::GalleryIcon::Download, "Save original")
+                            .clicked()
+                        {
+                            self.media.save_original(&target, ctx);
+                        }
+                    });
                 });
-                if let Some(Entry::Ready { data, .. }) = self.media.cache.get(&key) {
-                    ui.label(
-                        RichText::new(format!(
-                            "{} × {} · {} KB",
-                            data.dimensions.0,
-                            data.dimensions.1,
-                            data.bytes.len().div_ceil(1024)
-                        ))
-                        .small()
-                        .color(p.muted),
+                if self.gallery.len() > 1 {
+                    for (next, x) in [(false, screen.left() + 14.), (true, screen.right() - 50.)] {
+                        let rect = egui::Rect::from_min_size(
+                            egui::pos2(x, content.center().y - 18.),
+                            Vec2::splat(36.),
+                        );
+                        let mut nav = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                        nav.add_enabled_ui(
+                            if next {
+                                self.gallery_index + 1 < self.gallery.len()
+                            } else {
+                                self.gallery_index > 0
+                            },
+                            |ui| {
+                                if icons::gallery_button(
+                                    ui,
+                                    if next {
+                                        icons::GalleryIcon::Next
+                                    } else {
+                                        icons::GalleryIcon::Previous
+                                    },
+                                    if next { "Next (→)" } else { "Previous (←)" },
+                                )
+                                .clicked()
+                                {
+                                    if next {
+                                        self.gallery_index += 1;
+                                    } else {
+                                        self.gallery_index = self.gallery_index.saturating_sub(1);
+                                    }
+                                }
+                            },
+                        );
+                    }
+                    ui.painter().text(
+                        egui::pos2(screen.center().x, screen.bottom() - 14.),
+                        egui::Align2::CENTER_CENTER,
+                        format!("{} / {}", self.gallery_index + 1, self.gallery.len()),
+                        egui::FontId::proportional(11.),
+                        Color32::from_gray(150),
                     );
                 }
             });

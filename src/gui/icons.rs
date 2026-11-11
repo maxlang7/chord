@@ -170,3 +170,64 @@ pub fn back_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     }
     response
 }
+
+pub enum GalleryIcon {
+    Download,
+    External,
+    Close,
+    Previous,
+    Next,
+}
+
+pub fn gallery_button(ui: &mut egui::Ui, icon: GalleryIcon, label: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(36.), egui::Sense::click());
+    let ink = if ui.is_enabled() {
+        Color32::from_gray(225)
+    } else {
+        Color32::from_gray(90)
+    };
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, 6., Color32::from_white_alpha(22));
+    }
+    let r = Rect::from_center_size(rect.center(), Vec2::splat(20.));
+    let pt = |x: f32, y: f32| r.min + Vec2::new(x * r.width(), y * r.height());
+    let line = |a: (f32, f32), b: (f32, f32)| {
+        ui.painter()
+            .line_segment([pt(a.0, a.1), pt(b.0, b.1)], Stroke::new(1.8_f32, ink));
+    };
+    match icon {
+        GalleryIcon::Close => {
+            line((0.2, 0.2), (0.8, 0.8));
+            line((0.8, 0.2), (0.2, 0.8));
+        }
+        GalleryIcon::Download => {
+            line((0.5, 0.05), (0.5, 0.65));
+            line((0.25, 0.4), (0.5, 0.65));
+            line((0.75, 0.4), (0.5, 0.65));
+            line((0.1, 0.65), (0.1, 0.9));
+            line((0.1, 0.9), (0.9, 0.9));
+            line((0.9, 0.9), (0.9, 0.65));
+        }
+        GalleryIcon::External => {
+            line((0.5, 0.1), (0.9, 0.1));
+            line((0.9, 0.1), (0.9, 0.5));
+            line((0.9, 0.1), (0.4, 0.6));
+            line((0.35, 0.2), (0.1, 0.2));
+            line((0.1, 0.2), (0.1, 0.9));
+            line((0.1, 0.9), (0.8, 0.9));
+            line((0.8, 0.9), (0.8, 0.65));
+        }
+        GalleryIcon::Previous => {
+            line((0.65, 0.15), (0.3, 0.5));
+            line((0.3, 0.5), (0.65, 0.85));
+        }
+        GalleryIcon::Next => {
+            line((0.35, 0.15), (0.7, 0.5));
+            line((0.7, 0.5), (0.35, 0.85));
+        }
+    }
+    response
+        .on_hover_text(label)
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
