@@ -554,6 +554,39 @@ impl App {
     pub fn refresh(&mut self, append: bool) {
         self.refresh_inbox(append, false);
     }
+    /// Apply a right-click rule immediately. Quiet and mute stop counting as unread
+    /// until the fresh inbox agrees. Passing `mute_minutes` of `Some(None)` unmutes.
+    pub fn apply_channel_rule(
+        &mut self,
+        id: &str,
+        priority: Option<&str>,
+        mute_minutes: Option<Option<i64>>,
+    ) {
+        let now = chrono::Utc::now().timestamp_millis();
+        let apply = |chat: &mut Conversation| {
+            if chat.id != id {
+                return;
+            }
+            if let Some(priority) = priority {
+                chat.local_priority = priority.to_owned();
+            }
+            if let Some(minutes) = mute_minutes {
+                chat.mute_until = minutes.map(|minutes| now + minutes * 60_000);
+            }
+            let muted = chat.mute_until.is_some_and(|until| until > now);
+            if muted || chat.local_priority == "quiet" {
+                chat.unread = false;
+                chat.unread_count = 0;
+            }
+        };
+        for chat in &mut self.conversations {
+            apply(chat);
+        }
+        if let Some(chat) = &mut self.active {
+            apply(chat);
+        }
+        self.read_overrides.remove(id);
+    }
     pub fn refresh_now(&mut self) {
         self.refresh_inbox(false, true);
         self.request_messages(false, !self.messages.is_empty(), true);
@@ -1453,6 +1486,13 @@ impl App {
                             self.notice = "Last contact link undone".into();
                         }
 
+                        "Channel updated"
+                        | "Channel muted"
+                        | "Channel unmuted"
+                        | "Local importance rule saved" => {
+                            self.notice = label;
+                            self.refresh_inbox(false, true);
+                        }
                         _ => {
                             self.notice = label;
                             self.refresh(false);
@@ -1800,6 +1840,7 @@ impl App {
                         KeyCode::Char('z') if c.importance["rule"] != "quiet" => "quiet",
                         _ => "auto",
                     };
+                    self.apply_channel_rule(&c.id, Some(priority), None);
                     self.operation(
                         "Local importance rule saved",
                         "/api/preferences/conversation".into(),
@@ -1962,6 +2003,29 @@ fn base64_encode(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unimportant_and_mute_stop_counting_as_unread_immediately() {
+        let mut app = App::new(None, true);
+        let mut chat = app.conversations[0].clone();
+        chat.unread = true;
+        chat.unread_count = 4;
+        let id = chat.id.clone();
+        app.conversations[0] = chat.clone();
+        app.active = Some(chat);
+        app.apply_channel_rule(&id, Some("quiet"), None);
+        assert!(!app.conversations[0].unread);
+        assert!(!app.active.as_ref().unwrap().unread);
+        assert_eq!(app.conversations[0].unread_count, 0);
+        assert_eq!(app.conversations[0].local_priority, "quiet");
+        app.conversations[0].unread = true;
+        app.apply_channel_rule(&id, None, Some(Some(60)));
+        assert!(app.conversations[0].mute_until.is_some());
+        assert!(!app.conversations[0].unread);
+        assert_eq!(app.conversations[0].local_priority, "quiet");
+        app.apply_channel_rule(&id, Some("auto"), Some(None));
+        assert!(app.conversations[0].mute_until.is_none());
+        assert_eq!(app.conversations[0].local_priority, "auto");
+    }
     #[test]
     fn unread_opening_keeps_previous_boundary_after_optimistic_read() {
         let mut app = App::new(None, true);

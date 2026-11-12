@@ -75,6 +75,12 @@ test('quiet and pin overrides persist, All still contains every conversation',as
  const focus=rankInbox(conversations,book,{view:'focus',now});
  assert.deepEqual(focus.items.map(c=>c.id),['chat:two']);assert.equal(focus.summary.hidden,1);
  assert.equal(rankInbox(conversations,book,{view:'all',now}).items.length,2);
+ const ruled=applyLocalRules([{id:'chat:one',timestamp,unread:true,unreadCount:4,highlightCount:2,attention:{important:true,reason:'All messages in a selected channel'}}],book,now);
+ assert.equal(ruled[0].unread,false);
+ assert.equal(ruled[0].unreadCount,0);
+ assert.equal(ruled[0].highlightCount,0);
+ assert.equal(ruled[0].sourceUnread,true);
+ assert.equal(rankInbox(ruled,book,{view:'focus',now}).items.length,0);
  await book.setPreference('chat:one',{priority:'auto'});
  assert.equal(rankInbox(conversations,book,{view:'focus',now}).items.length,2);
 });
@@ -98,6 +104,9 @@ test('a mute lasts for one of five durations, hides unread, and keeps the priori
  assert.equal(book.preference('chat:one',later).muted,false);
  const back=applyLocalRules([{...chat,unread:true}],book,later);
  assert.equal(back[0].unread,true);
+ const stuck=applyLocalRules([{...chat,unread:true,isMuted:true,muteUntil:now}],book,later);
+ assert.equal(stuck[0].isMuted,false);
+ assert.equal(stuck[0].unread,true);
  assert.equal(rankInbox(back,book,{view:'focus',now:later}).items.map(c=>c.id).includes('chat:one'),true);
  await book.setPreference('chat:one',{muteMinutes:60},now);
  await book.setPreference('chat:one',{muteMinutes:null},now);

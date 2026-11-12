@@ -459,7 +459,11 @@ impl Gui {
                             self.app.refresh(false);
                         }
                         for (chat_index, chat) in chats.iter().enumerate() {
-                            if self.conversation_row(ui, chat, p).clicked() {
+                            let response = self.conversation_row(ui, chat, p);
+                            let pointer_on_row = response.interact_pointer_pos().is_some_and(|pos| {
+                                ui.ctx().layer_id_at(pos) == Some(response.layer_id)
+                            });
+                            if response.clicked() && pointer_on_row {
                                 self.app.selection = chat_index;
                                 self.choose_chat(chat.clone());
                                 ctx.request_repaint();
@@ -479,6 +483,15 @@ impl Gui {
             });
     }
     fn conversation_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        chat: &Conversation,
+        p: Palette,
+    ) -> egui::Response {
+        ui.push_id(&chat.id, |ui| self.conversation_row_inner(ui, chat, p))
+            .inner
+    }
+    fn conversation_row_inner(
         &mut self,
         ui: &mut egui::Ui,
         chat: &Conversation,
@@ -580,8 +593,11 @@ impl Gui {
         let text_left = rect.left() + 67.;
         let right = rect.right() - 9.;
         let mut stamp = time_label(&chat.timestamp);
-        if chat.mute_until.is_some() {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        if chat.mute_until.is_some_and(|until| until > now_ms) {
             stamp = format!("Muted · {stamp}");
+        } else if chat.local_priority == "quiet" {
+            stamp = format!("Unimportant · {stamp}");
         }
         let stamp_font = egui::FontId::proportional(11.);
         let stamp_width = ui
@@ -653,7 +669,12 @@ impl Gui {
             ui.ctx().request_repaint();
         }
         response.context_menu(|ui| self.channel_rules(ui, chat));
-        response.on_hover_text(format!("{}\n{}", chat.title, context))
+        // The hover tip is a higher layer than the menu and covers its items.
+        if response.context_menu_opened() || response.secondary_clicked() {
+            response
+        } else {
+            response.on_hover_text(format!("{}\n{}", chat.title, context))
+        }
     }
     fn channel_rules(&mut self, ui: &mut egui::Ui, chat: &Conversation) {
         let id = chat.id.clone();
@@ -673,6 +694,7 @@ impl Gui {
                 label.to_owned()
             };
             if ui.button(text).clicked() {
+                self.app.apply_channel_rule(&id, Some(value), None);
                 self.app.operation(
                     "Channel updated",
                     "/api/preferences/conversation".into(),
@@ -690,6 +712,7 @@ impl Gui {
             ("Mute for 7 days", 10080),
         ] {
             if ui.button(label).clicked() {
+                self.app.apply_channel_rule(&id, None, Some(Some(minutes)));
                 self.app.operation(
                     "Channel muted",
                     "/api/preferences/conversation".into(),
@@ -698,7 +721,12 @@ impl Gui {
                 ui.close();
             }
         }
-        if chat.mute_until.is_some() && ui.button("Unmute").clicked() {
+        if chat
+            .mute_until
+            .is_some_and(|until| until > chrono::Utc::now().timestamp_millis())
+            && ui.button("Unmute").clicked()
+        {
+            self.app.apply_channel_rule(&id, None, Some(None));
             self.app.operation(
                 "Channel unmuted",
                 "/api/preferences/conversation".into(),
@@ -2699,6 +2727,41 @@ mod tests {
             assert!(text.contains(label), "missing {label} in {text}");
         }
         assert_eq!(text.matches("Mute for").count(), 5, "{text}");
+    }
+    #[test]
+    fn unimportant_row_is_labeled_and_has_no_unread_dot() {
+        let ctx = egui::Context::default();
+        let mut gui = Gui::new(App::new(None, true), &ctx);
+        let mut chat = gui.app.conversations[0].clone();
+        chat.unread = true;
+        chat.local_priority = "quiet".into();
+        chat.title = "snipes".into();
+        let output = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                gui.conversation_row(ui, &chat, gui.theme.palette());
+            });
+        });
+        fn texts(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(painted) => out.push(painted.galley.job.text.clone()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        texts(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        for shape in &output.shapes {
+            texts(&shape.shape, &mut found);
+        }
+        let text = found.join("\n");
+        assert!(text.contains("Unimportant ·"), "{text}");
+        gui.app.conversations[0] = chat.clone();
+        gui.app.apply_channel_rule(&chat.id, None, Some(Some(60)));
+        assert!(!gui.app.conversations[0].unread);
+        assert!(gui.app.conversations[0].mute_until.is_some());
     }
     #[test]
     fn sidebar_rows_are_colored_by_account_and_slack_workspace() {

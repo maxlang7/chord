@@ -5,9 +5,9 @@ export function importance(conversation,{preference={},favorite=false,now=Date.n
  const reasons=[];let score=0;
  const add=(points,reason)=>{score+=points;reasons.push(reason)};
  if(preference.muted)return {important:false,score:-500,reasons:['Muted'],rule:'muted'};
- if(c.attention)return {important:c.attention.important,score:c.attention.important?100:0,reasons:[c.attention.reason],rule:'attention'};
  if(preference.priority==='important')return {important:true,score:1000,reasons:['Pinned by you'],rule:'important'};
  if(preference.priority==='quiet')return {important:false,score:-1000,reasons:['Quieted by you'],rule:'quiet'};
+ if(c.attention)return {important:c.attention.important,score:c.attention.important?100:0,reasons:[c.attention.reason],rule:'attention'};
  if(c.isMuted)return {important:false,score:-500,reasons:['Muted conversation'],rule:'auto'};
  if(favorite)add(100,'Favorite contact');
  if(signals.mention&&age<=30)add(90,'Mentions you');
@@ -33,8 +33,12 @@ export function applyLocalRules(items,book,now=Date.now()){
 }
 function withLocalRules(c,book,now){
  const preference=book.preference(c.id,now);
- if(!preference.muted)return {...c,localPriority:preference.priority,muteUntil:null};
- return {...c,localPriority:preference.priority,muteUntil:preference.muteUntil,isMuted:true,unread:false,sourceUnread:c.sourceUnread??!!c.unread};
+ // A cached row can still say isMuted after a local mute expires. Keep a network mute, which has no muteUntil.
+ const networkMuted=!!c.isMuted&&c.muteUntil==null;
+ const next={...c,localPriority:preference.priority,muteUntil:preference.muted?preference.muteUntil:null,isMuted:preference.muted||networkMuted};
+ if(preference.muted||preference.priority==='quiet')return {...next,unread:false,unreadCount:0,highlightCount:0,sourceUnread:c.sourceUnread??!!c.unread};
+ if(preference.priority==='important'&&c.sourceUnread)return {...next,unread:true};
+ return next;
 }
 export function rankInbox(items,book,{view='all',now=Date.now()}={}){
  const ranked=items.map(c=>{
