@@ -27,6 +27,8 @@ pub struct Conversation {
     pub participants: Vec<String>,
     pub blue: Value,
     pub direct: bool,
+    pub local_priority: String,
+    pub mute_until: Option<i64>,
     #[serde(rename = "contactIDs")]
     pub contact_ids: Vec<String>,
     pub avatar_contacts: Vec<Value>,

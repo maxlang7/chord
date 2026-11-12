@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {ContactBook} from '../contacts.mjs';
 import {Directory} from '../directory.mjs';
-import {importance,rankInbox} from '../importance.mjs';
+import {applyLocalRules,importance,rankInbox} from '../importance.mjs';
 
 const memoryBook=()=>{const book=new ContactBook('/unused');book.save=async()=>{};return book};
 
@@ -77,6 +77,32 @@ test('quiet and pin overrides persist, All still contains every conversation',as
  assert.equal(rankInbox(conversations,book,{view:'all',now}).items.length,2);
  await book.setPreference('chat:one',{priority:'auto'});
  assert.equal(rankInbox(conversations,book,{view:'focus',now}).items.length,2);
+});
+test('a mute lasts for one of five durations, hides unread, and keeps the priority underneath',async()=>{
+ const book=memoryBook();
+ const now=Date.parse('2026-11-12T15:00:00Z');
+ const chat={id:'chat:one',timestamp:new Date(now).toISOString(),direct:true,unread:true};
+ await assert.rejects(()=>book.setPreference('chat:one',{muteMinutes:90},now),/1 hour, 4 hours, 24 hours, 3 days, or 7 days/);
+ for(const minutes of [60,240,1440,4320,10080]){
+  const saved=await book.setPreference('chat:one',{priority:'important',muteMinutes:minutes},now);
+  assert.equal(saved.priority,'important');
+  assert.equal(saved.muted,true);
+  assert.equal(saved.muteUntil,now+minutes*60000);
+ }
+ const hidden=applyLocalRules([chat],book,now);
+ assert.equal(hidden[0].unread,false);
+ assert.equal(hidden[0].sourceUnread,true);
+ assert.equal(hidden[0].localPriority,'important');
+ assert.equal(rankInbox(hidden,book,{view:'focus',now}).items.length,0);
+ const later=now+10080*60000+1;
+ assert.equal(book.preference('chat:one',later).muted,false);
+ const back=applyLocalRules([{...chat,unread:true}],book,later);
+ assert.equal(back[0].unread,true);
+ assert.equal(rankInbox(back,book,{view:'focus',now:later}).items.map(c=>c.id).includes('chat:one'),true);
+ await book.setPreference('chat:one',{muteMinutes:60},now);
+ await book.setPreference('chat:one',{muteMinutes:null},now);
+ assert.equal(book.preference('chat:one',now).muted,false);
+ assert.equal(book.preference('chat:one',now).priority,'important');
 });
 test('direct conversations choose the other person for photos, excluding bridge bots and self',()=>{
  const book=memoryBook();

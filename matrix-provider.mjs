@@ -32,7 +32,9 @@ export class MatrixProvider{
   return this.roomRefresh;
  }
  async refreshRoomsNow(){
-  const sync=()=>this.raw('GET','/_matrix/client/v3/sync',undefined,{timeout:'0',filter:JSON.stringify({presence:{types:[]},room:{timeline:{limit:1},state:{lazy_load_members:true},ephemeral:{types:[]}}})});
+  // Ask Synapse to keep thread replies out of the room totals. With this flag,
+  // notification_count and highlight_count are the main timeline only.
+  const sync=()=>this.raw('GET','/_matrix/client/v3/sync',undefined,{timeout:'0',filter:JSON.stringify({presence:{types:[]},room:{timeline:{limit:1,unread_thread_notifications:true},state:{lazy_load_members:true},ephemeral:{types:[]}}})});
   let snapshot=await sync();
   const invites=Object.entries(snapshot.rooms?.invite||{}).filter(([,room])=>room.invite_state?.events?.some(e=>e.type==='m.room.member'&&e.state_key===this.account.userId&&e.content?.membership==='invite'&&/^@(slack|discord|whatsapp)(bot|_).*:chord\.local$/.test(e.sender||'')));
   // Join in the background. An initial import may contain hundreds of rooms;

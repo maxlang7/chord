@@ -49,7 +49,31 @@ export class ContactBook{
  async update(id,changes){const p=this.data.people[id];if(!p||p.redirect)throw Object.assign(new Error('Contact not found'),{status:404});if(Object.hasOwn(changes,'name')){const name=text(changes.name);if(!name||name.length>120)throw new Error('Use a contact name between 1 and 120 characters');p.customName=name}if(typeof changes.favorite==='boolean')p.favorite=changes.favorite;this.dirty=true;await this.save();return this.present(p)}
  async merge(sourceID,targetID){const source=this.data.people[sourceID],target=this.data.people[targetID];if(!source||!target||source.redirect||target.redirect||source===target)throw new Error('Choose two different existing contacts');const before=structuredClone({source,target});this.mergeInto(target,source);this.data.lastMerge={...before,mergedName:target.customName||null,mergedFavorite:target.favorite,at:new Date().toISOString()};await this.save();return this.present(target)}
  async undoMerge(){const previous=this.data.lastMerge;if(!previous)throw new Error('No contact link to undo');const current=this.data.people[previous.target.id];if((current.customName||null)!==previous.mergedName||current.favorite!==previous.mergedFavorite||current.identities.some(i=>!previous.target.identities.some(j=>j.key===i.key)&&!previous.source.identities.some(j=>j.key===i.key)))throw new Error('Contacts changed since linking; review the current links before undoing');for(const p of [previous.source,previous.target]){this.data.people[p.id]=p;for(const i of p.identities)this.data.links[i.key]=p.id}delete this.data.lastMerge;this.dirty=true;await this.save();return {success:true}}
- preference(id){return this.data.conversations[id]||{priority:'auto'}}
- async setPreference(id,{priority}){if(!['auto','important','quiet'].includes(priority))throw new Error('Priority must be auto, important, or quiet');this.data.conversations[id]={priority};this.dirty=true;await this.save();return this.preference(id)}
+ preference(id,now=Date.now()){
+  const saved=this.data.conversations[id]||{};
+  const priority=['auto','important','quiet'].includes(saved.priority)?saved.priority:'auto';
+  const muteUntil=Number(saved.muteUntil);
+  const muted=Number.isFinite(muteUntil)&&muteUntil>now;
+  return {priority,muteUntil:muted?muteUntil:null,muted};
+ }
+ async setPreference(id,changes={},now=Date.now()){
+  if(!Object.hasOwn(changes,'priority')&&!Object.hasOwn(changes,'muteMinutes'))throw new Error('Set a priority or a mute duration');
+  const current=this.data.conversations[id]||{};
+  const next={priority:['auto','important','quiet'].includes(current.priority)?current.priority:'auto'};
+  if(Number(current.muteUntil)>now)next.muteUntil=Number(current.muteUntil);
+  if(Object.hasOwn(changes,'priority')){
+   if(!['auto','important','quiet'].includes(changes.priority))throw new Error('Priority must be auto, important, or quiet');
+   next.priority=changes.priority;
+  }
+  if(Object.hasOwn(changes,'muteMinutes')){
+   if(changes.muteMinutes==null)delete next.muteUntil;
+   else {
+    const minutes=changes.muteMinutes;
+    if(![60,240,1440,4320,10080].includes(minutes))throw new Error('Mute for 1 hour, 4 hours, 24 hours, 3 days, or 7 days');
+    next.muteUntil=now+minutes*60000;
+   }
+  }
+  this.data.conversations[id]=next;this.dirty=true;await this.save();return this.preference(id,now);
+ }
  async save(){if(!this.dirty)return this.writes;this.dirty=false;const json=JSON.stringify(this.data);this.writes=this.writes.catch(()=>{}).then(async()=>{await mkdir(this.dataDir,{recursive:true,mode:0o700});const temp=this.file+'.pending';await writeFile(temp,json,{mode:0o600});await rename(temp,this.file)});return this.writes}
 }

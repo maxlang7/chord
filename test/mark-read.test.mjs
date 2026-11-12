@@ -41,6 +41,19 @@ test('mark read survives a concurrent room refresh replacing the conversation ob
  assert.equal(p.chats.get('!room').unreadCount,0);assert.equal(p.chats.get('!room').isMarkedUnread,false);
  await p.refreshRoomsNow();assert.equal(p.chats.get('!room').unreadCount,0);
 });
+test('thread replies stay out of the channel unread and mention counts',async()=>{
+ const p=new MatrixProvider({}, {userId:'@me'},{save:false});
+ let filter;
+ p.raw=async(_method,_path,_body,query)=>{filter=JSON.parse(query.filter);return {rooms:{join:{'!room':{timeline:{events:[{origin_server_ts:3000,content:{'m.relates_to':{rel_type:'m.thread',event_id:'$root'}}}]},unread_notifications:{notification_count:0,highlight_count:0},unread_thread_notifications:{'$root':{notification_count:6,highlight_count:2}}}}}}};
+ await p.refreshRoomsNow();
+ assert.equal(filter.room.timeline.unread_thread_notifications,true);
+ assert.equal(p.chats.get('!room').unreadCount,0);
+ assert.equal(p.chats.get('!room').highlightCount,0);
+ p.raw=async()=>({rooms:{join:{'!room':{timeline:{events:[{origin_server_ts:4000}]},unread_notifications:{notification_count:2,highlight_count:1},unread_thread_notifications:{'$root':{notification_count:6,highlight_count:2}}}}}});
+ await p.refreshRoomsNow();
+ assert.equal(p.chats.get('!room').unreadCount,2);
+ assert.equal(p.chats.get('!room').highlightCount,1);
+});
 test('explicit unread stays set when a stale sync response says read',async()=>{
  const p=new MatrixProvider({accountData:{setRoom:async()=>{}}},{userId:'@me'},{save:false});p.chats.set('!room',{id:'!room'});
  p.raw=async()=>({rooms:{join:{'!room':{timeline:{events:[{origin_server_ts:1000}]},account_data:{events:[{type:'m.marked_unread',content:{unread:false}}]},unread_notifications:{notification_count:0}}}}});

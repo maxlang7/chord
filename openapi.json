@@ -622,7 +622,7 @@
     },
     "/api/preferences/conversation": {
       "post": {
-        "summary": "Set local importance rule",
+        "summary": "Set local importance or a mute of 1 hour, 4 hours, 24 hours, 3 days, or 7 days",
         "responses": {
           "200": {
             "description": "JSON result"

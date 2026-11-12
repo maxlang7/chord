@@ -579,7 +579,10 @@ impl Gui {
         icons::service(ui.painter(), badge.shrink(3.), source, p.text);
         let text_left = rect.left() + 67.;
         let right = rect.right() - 9.;
-        let stamp = time_label(&chat.timestamp);
+        let mut stamp = time_label(&chat.timestamp);
+        if chat.mute_until.is_some() {
+            stamp = format!("Muted · {stamp}");
+        }
         let stamp_font = egui::FontId::proportional(11.);
         let stamp_width = ui
             .painter()
@@ -647,7 +650,60 @@ impl Gui {
             self.choose_chat(chat.clone());
             ui.ctx().request_repaint();
         }
+        response.context_menu(|ui| self.channel_rules(ui, chat));
         response.on_hover_text(format!("{}\n{}", chat.title, context))
+    }
+    fn channel_rules(&mut self, ui: &mut egui::Ui, chat: &Conversation) {
+        let id = chat.id.clone();
+        let priority = if chat.local_priority.is_empty() {
+            "auto"
+        } else {
+            chat.local_priority.as_str()
+        };
+        for (label, value) in [
+            ("Important", "important"),
+            ("Unimportant", "quiet"),
+            ("Automatic", "auto"),
+        ] {
+            let text = if priority == value {
+                format!("✓ {label}")
+            } else {
+                label.to_owned()
+            };
+            if ui.button(text).clicked() {
+                self.app.operation(
+                    "Channel updated",
+                    "/api/preferences/conversation".into(),
+                    json!({"conversationID":id,"priority":value}),
+                );
+                ui.close();
+            }
+        }
+        ui.separator();
+        for (label, minutes) in [
+            ("Mute for 1 hour", 60),
+            ("Mute for 4 hours", 240),
+            ("Mute for 24 hours", 1440),
+            ("Mute for 3 days", 4320),
+            ("Mute for 7 days", 10080),
+        ] {
+            if ui.button(label).clicked() {
+                self.app.operation(
+                    "Channel muted",
+                    "/api/preferences/conversation".into(),
+                    json!({"conversationID":id,"muteMinutes":minutes}),
+                );
+                ui.close();
+            }
+        }
+        if chat.mute_until.is_some() && ui.button("Unmute").clicked() {
+            self.app.operation(
+                "Channel unmuted",
+                "/api/preferences/conversation".into(),
+                json!({"conversationID":id,"muteMinutes":null}),
+            );
+            ui.close();
+        }
     }
     fn avatar(
         &mut self,
@@ -760,20 +816,7 @@ impl Gui {
                                 ui.close();
                             }
                             ui.separator();
-                            for (label, priority) in [
-                                ("Pin in Focus", "important"),
-                                ("Quiet in Chord", "quiet"),
-                                ("Automatic importance", "auto"),
-                            ] {
-                                if ui.button(label).clicked() {
-                                    self.app.operation(
-                                        "Importance updated",
-                                        "/api/preferences/conversation".into(),
-                                        json!({"conversationID":chat.id,"priority":priority}),
-                                    );
-                                    ui.close();
-                                }
-                            }
+                            self.channel_rules(ui, &chat);
                             ui.separator();
                             for id in &chat.contact_ids {
                                 if ui.button("View contact profile").clicked() {
@@ -2568,6 +2611,92 @@ mod tests {
             "divider should be near the top, got {y}"
         );
         assert!(gui.scroll_to.is_none(), "jump is consumed once");
+    }
+    #[test]
+    fn right_clicking_a_channel_offers_importance_and_five_mute_durations() {
+        let ctx = egui::Context::default();
+        let mut gui = Gui::new(App::new(None, true), &ctx);
+        let chat = gui.app.conversations[0].clone();
+        let mut time = 0.0;
+        let mut rect = egui::Rect::NOTHING;
+        let mut opened = false;
+        let mut frame = |gui: &mut Gui, events| {
+            time += 0.08;
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(480., 420.),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let response = gui.conversation_row(ui, &chat, gui.theme.palette());
+                        opened = response.context_menu_opened();
+                        rect = response.rect;
+                    });
+                },
+            );
+            rect.center()
+        };
+        let pos = frame(&mut gui, vec![]);
+        frame(&mut gui, vec![egui::Event::PointerMoved(pos)]);
+        frame(
+            &mut gui,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Secondary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+        );
+        frame(
+            &mut gui,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Secondary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert!(opened, "right-click should open the channel menu");
+        let direct = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                gui.channel_rules(ui, &chat);
+            });
+        });
+        fn texts(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(painted) => out.push(painted.galley.job.text.clone()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        texts(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        for shape in &direct.shapes {
+            texts(&shape.shape, &mut found);
+        }
+        let text = found.join("\n");
+        for label in [
+            "Important",
+            "Unimportant",
+            "Automatic",
+            "Mute for 1 hour",
+            "Mute for 4 hours",
+            "Mute for 24 hours",
+            "Mute for 3 days",
+            "Mute for 7 days",
+        ] {
+            assert!(text.contains(label), "missing {label} in {text}");
+        }
+        assert_eq!(text.matches("Mute for").count(), 5, "{text}");
     }
     #[test]
     fn native_layout_renders_at_normal_and_compact_sizes() {
