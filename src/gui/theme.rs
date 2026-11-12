@@ -117,6 +117,38 @@ pub fn service_color(source: usize) -> Color32 {
     };
     Color32::from_rgb(r, g, b)
 }
+
+/// Sidebar color for one connected account. Slack workspaces are separate
+/// accounts: `slack:T…` picks a stable color that stays off the other networks.
+pub fn account_color(account_key: &str) -> Color32 {
+    if let Some(team) = account_key.strip_prefix("slack:") {
+        if !team.is_empty() {
+            return slack_workspace_color(team);
+        }
+    }
+    let index = crate::model::SOURCES
+        .iter()
+        .position(|(id, _, _)| *id == account_key)
+        .unwrap_or(0);
+    service_color(index)
+}
+
+fn slack_workspace_color(team: &str) -> Color32 {
+    // Kept away from Discord blue, WhatsApp green, iMessage cyan, and both mails.
+    const PALETTE: &[(u8, u8, u8)] = &[
+        (176, 98, 214),
+        (214, 112, 72),
+        (214, 86, 140),
+        (120, 112, 196),
+        (196, 92, 72),
+        (156, 108, 188),
+    ];
+    let hash = team.bytes().fold(0_u32, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(u32::from(byte))
+    });
+    let (r, g, b) = PALETTE[(hash as usize) % PALETTE.len()];
+    Color32::from_rgb(r, g, b)
+}
 pub fn avatar_color(name: &str) -> Color32 {
     let palette = [
         (90, 155, 208),
@@ -141,4 +173,33 @@ pub fn tint(base: Color32, accent: Color32, amount: f32) -> Color32 {
         mix(base.g(), accent.g()),
         mix(base.b(), accent.b()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_account_has_its_own_color_and_slack_workspaces_differ() {
+        let lab = account_color("slack:TEMMBGZU3");
+        let course = account_color("slack:TSAU3JLKZ");
+        assert_ne!(lab, course);
+        for key in [
+            "slack",
+            "discord",
+            "whatsapp",
+            "iphone",
+            "mail:home",
+            "mail:cmu",
+        ] {
+            let color = account_color(key);
+            assert_ne!(lab, color, "{key}");
+            assert_ne!(course, color, "{key}");
+        }
+        assert_eq!(account_color("slack"), service_color(1));
+        assert_eq!(account_color("discord"), service_color(2));
+        assert_eq!(account_color("mail:home"), service_color(5));
+        assert_eq!(account_color("mail:cmu"), service_color(6));
+        assert_ne!(account_color("mail:home"), account_color("mail:cmu"));
+    }
 }

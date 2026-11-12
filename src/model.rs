@@ -11,6 +11,8 @@ pub struct Conversation {
     pub preview_sender_name: String,
     pub timestamp: String,
     pub source: String,
+    pub account_key: String,
+    pub account_name: Option<String>,
     #[serde(rename = "serverID")]
     pub server_id: Option<String>,
     pub server_name: Option<String>,

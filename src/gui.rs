@@ -490,29 +490,29 @@ impl Gui {
             return response;
         }
         let active = self.app.active.as_ref().is_some_and(|c| c.id == chat.id);
-        let source_index = crate::model::SOURCES
-            .iter()
-            .position(|(id, _, _)| *id == chat.source)
-            .unwrap_or(0);
-        let color = theme::service_color(source_index);
-        if active || response.hovered() {
-            ui.painter().rect_filled(
-                rect.shrink2(egui::vec2(0., 3.)),
-                8.,
-                if active {
-                    theme::tint(p.panel, color, 0.18)
-                } else {
-                    theme::tint(p.panel, color, 0.06)
-                },
-            );
-        }
-        if active {
-            ui.painter().rect_filled(
-                egui::Rect::from_min_size(rect.min + egui::vec2(0., 18.), egui::vec2(3., 54.)),
-                2.,
-                color,
-            );
-        }
+        let account_key = if chat.account_key.is_empty() {
+            chat.source.as_str()
+        } else {
+            chat.account_key.as_str()
+        };
+        let color = theme::account_color(account_key);
+        let wash = if active {
+            0.22
+        } else if response.hovered() {
+            0.16
+        } else {
+            0.11
+        };
+        ui.painter().rect_filled(
+            rect.shrink2(egui::vec2(0., 3.)),
+            8.,
+            theme::tint(p.panel, color, wash),
+        );
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(rect.min + egui::vec2(0., 18.), egui::vec2(3., 54.)),
+            2.,
+            color,
+        );
         let avatar_rect =
             egui::Rect::from_min_size(rect.min + egui::vec2(9., 23.), Vec2::splat(44.));
         // The row already owns its layout space. Avatar children must not
@@ -599,6 +599,8 @@ impl Gui {
         let context = chat
             .server_name
             .as_deref()
+            .filter(|name| !name.is_empty())
+            .or(chat.account_name.as_deref().filter(|name| !name.is_empty()))
             .unwrap_or_else(|| source_label(&chat.source));
         let title = if chat.direct {
             chat.title.clone()
@@ -2697,6 +2699,68 @@ mod tests {
             assert!(text.contains(label), "missing {label} in {text}");
         }
         assert_eq!(text.matches("Mute for").count(), 5, "{text}");
+    }
+    #[test]
+    fn sidebar_rows_are_colored_by_account_and_slack_workspace() {
+        let ctx = egui::Context::default();
+        let mut gui = Gui::new(App::new(None, true), &ctx);
+        let mut lab = gui.app.conversations[0].clone();
+        lab.id = "lab".into();
+        lab.source = "slack".into();
+        lab.direct = false;
+        lab.title = "#general".into();
+        lab.account_key = "slack:TEMMBGZU3".into();
+        lab.account_name = Some("Garcia-Bosch Lab".into());
+        lab.server_name = None;
+        let mut course = lab.clone();
+        course.id = "course".into();
+        course.title = "#announcements".into();
+        course.account_key = "slack:TSAU3JLKZ".into();
+        course.account_name = Some("15-112 Staff Fall 2026".into());
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(420., 400.),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let p = gui.theme.palette();
+                    gui.conversation_row(ui, &lab, p);
+                    gui.conversation_row(ui, &course, p);
+                });
+            },
+        );
+        fn walk(shape: &egui::Shape, fills: &mut Vec<Color32>, labels: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Rect(rect) => fills.push(rect.fill),
+                egui::Shape::Text(text) => labels.push(text.galley.job.text.clone()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        walk(shape, fills, labels);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut fills = Vec::new();
+        let mut labels = Vec::new();
+        for shape in &output.shapes {
+            walk(&shape.shape, &mut fills, &mut labels);
+        }
+        let lab_color = theme::account_color("slack:TEMMBGZU3");
+        let course_color = theme::account_color("slack:TSAU3JLKZ");
+        assert_ne!(lab_color, course_color);
+        assert!(fills.contains(&lab_color), "lab color missing");
+        assert!(fills.contains(&course_color), "course color missing");
+        let text = labels.join("\n");
+        assert!(text.contains("#general · Garcia-Bosch Lab"), "{text}");
+        assert!(
+            text.contains("#announcements · 15-112 Staff Fall 2026"),
+            "{text}"
+        );
     }
     #[test]
     fn native_layout_renders_at_normal_and_compact_sizes() {
