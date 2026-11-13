@@ -509,18 +509,17 @@ impl Gui {
             chat.account_key.as_str()
         };
         let color = theme::account_color(account_key);
-        let wash = if active {
-            0.22
-        } else if response.hovered() {
-            0.16
-        } else {
-            0.11
-        };
-        ui.painter().rect_filled(
-            rect.shrink2(egui::vec2(0., 3.)),
-            8.,
-            theme::tint(p.panel, color, wash),
-        );
+        if active || response.hovered() {
+            ui.painter().rect_filled(
+                rect.shrink2(egui::vec2(0., 3.)),
+                8.,
+                if active {
+                    p.raised
+                } else {
+                    theme::tint(p.panel, p.raised, 0.45)
+                },
+            );
+        }
         ui.painter().rect_filled(
             egui::Rect::from_min_size(rect.min + egui::vec2(0., 18.), egui::vec2(3., 54.)),
             2.,
