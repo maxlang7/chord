@@ -24,14 +24,14 @@ impl Theme {
         match self {
             Self::Gruvbox => Palette {
                 bg: rgb(29, 32, 33),
-                panel: rgb(40, 40, 40),
-                raised: rgb(60, 56, 54),
-                text: rgb(235, 219, 178),
-                muted: rgb(168, 153, 132),
-                line: rgb(70, 66, 60),
-                accent: rgb(91, 202, 177),
-                blue: rgb(126, 174, 239),
-                own: rgb(34, 60, 55),
+                panel: rgb(60, 56, 54),
+                raised: rgb(102, 92, 84),
+                text: rgb(251, 241, 199),
+                muted: rgb(189, 174, 147),
+                line: rgb(124, 111, 100),
+                accent: rgb(254, 128, 25),
+                blue: rgb(137, 180, 250),
+                own: rgb(72, 52, 36),
             },
             Self::Dark => Palette {
                 bg: rgb(22, 24, 28),
@@ -179,6 +179,21 @@ pub fn tint(base: Color32, accent: Color32, amount: f32) -> Color32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn gruvbox_keeps_surfaces_and_accents_apart() {
+        let p = Theme::Gruvbox.palette();
+        let dist = |a: Color32, b: Color32| {
+            u16::from(a.r().abs_diff(b.r()))
+                + u16::from(a.g().abs_diff(b.g()))
+                + u16::from(a.b().abs_diff(b.b()))
+        };
+        assert!(dist(p.bg, p.panel) >= 60, "background and panels");
+        assert!(dist(p.panel, p.raised) >= 40, "panels and raised controls");
+        assert!(dist(p.bg, p.own) >= 40, "thread and your messages");
+        assert!(dist(p.text, p.muted) >= 80, "primary and secondary text");
+        assert!(dist(p.panel, p.line) >= 80, "panels and separators");
+        assert!(dist(p.accent, p.blue) >= 150, "accent and links");
+    }
     #[test]
     fn each_account_has_its_own_color_and_slack_workspaces_differ() {
         let lab = account_color("slack:TEMMBGZU3");
