@@ -45,6 +45,21 @@ test('explicit contact links can be undone without losing either record',async()
  assert.equal(book.person('@discord_1:chord.local').id,b.id);
 });
 
+test('reaction names use contacts, call you You, and reuse senders on the page',async()=>{
+ const book=memoryBook();
+ book.observe({key:'@slack_t1-u1:chord.local',name:'Alex',source:'slack'});
+ const directory=new Directory(book,{blue:async()=>[],config:()=>({})});
+ directory.catalog.selfIds.add('@max:chord.local');
+ const [first,second]=await directory.enrichMessages([
+  {id:'a',senderID:'@slack_t1-u9:chord.local',senderName:'Pat',text:'Earlier',reactions:[{reactionKey:'👍',participantID:'@slack_t1-u1:chord.local'},{reactionKey:'👍',participantID:'@max:chord.local'},{reactionKey:'👍',participantID:'@slack_t1-u2:chord.local'}]},
+  {id:'b',senderID:'@slack_t1-u2:chord.local',senderName:'Sam',text:'Later',reactions:[]},
+ ],{source:'slack'});
+ assert.equal(first.reactions[0].participantName,'Alex');
+ assert.equal(first.reactions[1].participantName,'You');
+ assert.equal(first.reactions[2].participantName,'Sam');
+ assert.equal(second.senderName,'Sam');
+});
+
 test('message senders use contact names and local renames across linked accounts',async()=>{
  const book=memoryBook();const person=book.observe({key:'@slack_t1-u1:chord.local',name:'Alex',source:'slack'});
  await book.update(person.id,{name:'Alex from lab'});

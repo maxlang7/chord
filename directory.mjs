@@ -49,17 +49,24 @@ export class Directory{
  async enrichMessages(items,conversation){
   const source=conversation.source||conversation.accountID||'matrix';
   const keyFor=m=>source.startsWith('mail:')?mailbox(m.from||m.senderName).key:source==='iphone'?(phoneIdentity(m.senderID||m.address)||m.senderID):m.senderID;
-  const unknown=[...new Set(items.filter(m=>!m.isSender&&!this.book.name(keyFor(m))).map(keyFor).filter(Boolean))];
+  const reactionIDs=items.flatMap(m=>(m.reactions||[]).map(r=>r?.participantID).filter(id=>id&&!this.catalog.selfIds.has(id)&&!this.book.name(id)));
+  const unknown=[...new Set([...items.filter(m=>!m.isSender&&!this.book.name(keyFor(m))).map(keyFor),...reactionIDs].filter(Boolean))];
   if(!this.profileWork)this.profileWork=(async()=>{for(let i=0;i<unknown.length;i+=4)await Promise.all(unknown.slice(i,i+4).map(k=>this.profile(k)));await this.book.save()})().catch(()=>{}).finally(()=>{this.profileWork=null});
   const mentionMap=new Map();
   for(const p of this.book.list())for(const i of p.identities){const match=i.key.match(/^@(slack|discord)_(.+):chord\.local$/);if(match){const remote=match[1]==='slack'?match[2].split('-').at(-1):match[2];const key=remote.toLowerCase();const prev=mentionMap.get(key);mentionMap.set(key,prev&&prev!==p.name?null:p.name)}}
+  const participantName=id=>{if(!id)return null;if(this.catalog.selfIds.has(id))return 'You';return this.book.name(id)};
   const result=items.map(m=>{
    const key=keyFor(m);if(source.startsWith('mail:'))this.observeMail(m.from||m.senderName);
    if(key&&!this.book.person(key))this.book.observe({key,source,name:usableName(m.senderName)?m.senderName:null});
    const p=this.book.person(key),resolved=this.book.name(key,m.senderName);
    const isSender=m.isSender||this.catalog.selfIds.has(key);
    const fallback=source==='iphone'?'Phone contact':source==='slack'?'Slack contact':source==='discord'?'Discord contact':'Unknown contact';
-   return {...m,isSender,senderName:isSender?'You':resolved||fallback,senderContactID:p?.id||null,contactResolved:!!resolved,text:String(m.text||'').replace(/<@!?([a-zA-Z0-9]+)>/g,(whole,id)=>mentionMap.get(id.toLowerCase())?'@'+mentionMap.get(id.toLowerCase()):whole)};
-  });await this.book.save();return result;
+   const reactions=Array.isArray(m.reactions)?m.reactions.map(r=>{const name=participantName(r?.participantID);return name?{...r,participantName:name}:r}):m.reactions;
+   return {...m,isSender,senderName:isSender?'You':resolved||fallback,senderContactID:p?.id||null,contactResolved:!!resolved,reactions,text:String(m.text||'').replace(/<@!?([a-zA-Z0-9]+)>/g,(whole,id)=>mentionMap.get(id.toLowerCase())?'@'+mentionMap.get(id.toLowerCase()):whole)};
+  });
+  const spoken=new Map();
+  for(const m of result)if(m.senderID&&(m.isSender||m.contactResolved))spoken.set(m.senderID,m.senderName);
+  for(const m of result)if(Array.isArray(m.reactions))m.reactions=m.reactions.map(r=>r.participantName||!spoken.get(r.participantID)?r:{...r,participantName:spoken.get(r.participantID)});
+  await this.book.save();return result;
  }
 }

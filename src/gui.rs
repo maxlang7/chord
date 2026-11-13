@@ -998,6 +998,7 @@ impl Gui {
                     .iter()
                     .any(|reply| reply.thread_root_id.as_ref() == Some(&m.id)));
         let mut thread_clicked = false;
+        let reaction_hovered = std::cell::Cell::new(false);
         let response = ui
             .scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
                 egui::Frame::new()
@@ -1225,34 +1226,34 @@ impl Gui {
                                         }
                                     }
                                 }
-                                let mut reactions = BTreeMap::<String, (usize, bool)>::new();
-                                for reaction in &m.reactions {
-                                    let key =
-                                        reaction["reactionKey"].as_str().unwrap_or("?").to_owned();
-                                    let e = reactions.entry(key).or_default();
-                                    e.0 += 1;
-                                    e.1 |= reaction["participantID"].as_str()
-                                        == self.app.status["userID"].as_str()
-                                        && reaction["participantID"].is_string();
-                                }
+                                let reactions = reaction_summaries(
+                                    &m.reactions,
+                                    self.app.status["userID"].as_str().unwrap_or(""),
+                                );
                                 if !reactions.is_empty() {
                                     ui.horizontal_wrapped(|ui| {
-                                        for (key, (count, mine)) in reactions {
-                                            if ui
+                                        for (key, summary) in reactions {
+                                            let response = ui
                                                 .add_enabled(
                                                     chat.can_react,
-                                                    emoji::button(ui, &key, &count.to_string())
-                                                        .fill(if mine { p.own } else { p.raised })
-                                                        .corner_radius(10),
+                                                    emoji::button(
+                                                        ui,
+                                                        &key,
+                                                        &summary.count.to_string(),
+                                                    )
+                                                    .fill(if summary.mine {
+                                                        p.own
+                                                    } else {
+                                                        p.raised
+                                                    })
+                                                    .corner_radius(10),
                                                 )
-                                                .on_hover_text(if mine {
-                                                    "Remove your reaction"
-                                                } else {
-                                                    "React"
-                                                })
-                                                .clicked()
-                                            {
-                                                self.react(chat, m, &key, mine);
+                                                .on_hover_text(reaction_tooltip(&summary));
+                                            if response.hovered() {
+                                                reaction_hovered.set(true);
+                                            }
+                                            if response.clicked() {
+                                                self.react(chat, m, &key, summary.mine);
                                             }
                                         }
                                     });
@@ -1264,9 +1265,11 @@ impl Gui {
             })
             .response;
         if has_thread {
-            response
-                .clone()
-                .on_hover_text("Click to expand or collapse replies");
+            if !reaction_hovered.get() {
+                response
+                    .clone()
+                    .on_hover_text("Click to expand or collapse replies");
+            }
             if (response.clicked() || thread_clicked) && !response.double_clicked() {
                 let target = (chat.id.clone(), m.id.clone());
                 if self.expanded_thread.as_ref() == Some(&target) {
@@ -2327,6 +2330,64 @@ impl eframe::App for Gui {
         ctx.request_repaint_after(Duration::from_millis(250));
     }
 }
+#[derive(Default)]
+struct ReactionSummary {
+    count: usize,
+    mine: bool,
+    names: Vec<String>,
+}
+
+fn reaction_summaries(reactions: &[Value], self_id: &str) -> BTreeMap<String, ReactionSummary> {
+    let mut grouped = BTreeMap::<String, ReactionSummary>::new();
+    let mut seen = BTreeMap::<String, Vec<String>>::new();
+    for reaction in reactions {
+        let key = reaction["reactionKey"].as_str().unwrap_or("?").to_owned();
+        let id = reaction["participantID"]
+            .as_str()
+            .filter(|id| !id.is_empty());
+        if let Some(id) = id {
+            let seen_ids = seen.entry(key.clone()).or_default();
+            if seen_ids.iter().any(|known| known == id) {
+                continue;
+            }
+            seen_ids.push(id.to_owned());
+        }
+        let summary = grouped.entry(key).or_default();
+        summary.count += 1;
+        let named = reaction["participantName"]
+            .as_str()
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+        let mine = id.is_some_and(|id| id == self_id) || named == Some("You");
+        if mine {
+            summary.mine = true;
+            if !summary.names.iter().any(|name| name == "You") {
+                summary.names.insert(0, "You".into());
+            }
+        } else if let Some(name) = named {
+            summary.names.push(name.to_owned());
+        }
+    }
+    grouped
+}
+
+fn reaction_tooltip(summary: &ReactionSummary) -> String {
+    if summary.names.is_empty() {
+        return if summary.mine {
+            "Remove your reaction".into()
+        } else {
+            "React".into()
+        };
+    }
+    const LIMIT: usize = 12;
+    if summary.names.len() <= LIMIT {
+        return summary.names.join("\n");
+    }
+    let mut lines = summary.names[..LIMIT].to_vec();
+    lines.push(format!("and {} more", summary.names.len() - LIMIT));
+    lines.join("\n")
+}
+
 // Keep loaded Slack replies beside their parent while retaining their original
 // indices for reply, reaction, and edit actions. Orphan replies remain visible.
 fn row_text(ui: &egui::Ui, text: &str, pos: egui::Pos2, width: f32, size: f32, color: Color32) {
@@ -2417,6 +2478,37 @@ pub fn run(app: App) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reaction_hover_lists_people_and_puts_you_first() {
+        let reactions = vec![
+            json!({"reactionKey":"👍","participantID":"alex","participantName":"Alex Chen"}),
+            json!({"reactionKey":"👍","participantID":"alex","participantName":"Alex Chen"}),
+            json!({"reactionKey":"👍","participantID":"@max:chord.local","participantName":"Max"}),
+            json!({"reactionKey":"👍","participantID":"sam","participantName":"Sam"}),
+            json!({"reactionKey":"❤️","participantID":"unknown"}),
+        ];
+        let grouped = reaction_summaries(&reactions, "@max:chord.local");
+        let thumbs = &grouped["👍"];
+        assert_eq!(thumbs.count, 3);
+        assert!(thumbs.mine);
+        assert_eq!(thumbs.names, ["You", "Alex Chen", "Sam"]);
+        assert_eq!(reaction_tooltip(thumbs), "You\nAlex Chen\nSam");
+        let heart = &grouped["❤️"];
+        assert_eq!(heart.count, 1);
+        assert!(!heart.mine);
+        assert!(heart.names.is_empty());
+        assert_eq!(reaction_tooltip(heart), "React");
+        let mut many = Vec::new();
+        for index in 0..14 {
+            many.push(json!({"reactionKey":"🎉","participantID":format!("p{index}"),"participantName":format!("Person {index}")}));
+        }
+        let party = &reaction_summaries(&many, "")["🎉"];
+        assert_eq!(party.count, 14);
+        assert_eq!(
+            reaction_tooltip(party),
+            "Person 0\nPerson 1\nPerson 2\nPerson 3\nPerson 4\nPerson 5\nPerson 6\nPerson 7\nPerson 8\nPerson 9\nPerson 10\nPerson 11\nand 2 more"
+        );
+    }
     #[test]
     fn bundled_fonts_cover_message_and_reaction_emoji() {
         let ctx = egui::Context::default();
