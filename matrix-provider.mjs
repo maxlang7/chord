@@ -23,7 +23,7 @@ export class MatrixProvider{
  }
  async start(){
   if(this.started)return;await this.client.boot();
-  if(this.persist){const saved=await readHistory(this.dataDir).catch(e=>{if(e.code!=='ENOENT')throw e;return null});if(saved){this.chats=new Map(saved.chats||[]);this.timelines=new Map(saved.timelines||[]);this.reactions=new Map(saved.reactions||[]);this.mediaFiles=new Map(saved.mediaFiles||[])}}
+  if(this.persist){const saved=await readHistory(this.dataDir).catch(e=>{if(e.code!=='ENOENT')throw e;return null});if(saved){this.chats=new Map(saved.chats||[]);this.timelines=new Map(saved.timelines||[]);this.reactions=new Map(saved.reactions||[]);this.mediaFiles=new Map(saved.mediaFiles||[]);if(saved.syncToken)this.syncToken=saved.syncToken}}
   await this.refreshRooms();this.subscription=await this.client.subscribe(undefined,e=>this.onEvent(e));this.subscription.done.catch(e=>{this.error=e.message});this.started=true;
  }
  async refreshRooms(){
@@ -34,27 +34,55 @@ export class MatrixProvider{
  async refreshRoomsNow(){
   // Ask Synapse to keep thread replies out of the room totals. With this flag,
   // notification_count and highlight_count are the main timeline only.
-  const sync=()=>this.raw('GET','/_matrix/client/v3/sync',undefined,{timeout:'0',filter:JSON.stringify({presence:{types:[]},room:{timeline:{limit:1,unread_thread_notifications:true},state:{lazy_load_members:true},ephemeral:{types:[]}}})});
-  let snapshot=await sync();
+  // Reuse next_batch so a warm inbox is an incremental sync. The first sync
+  // after a worker start is still a full snapshot; a rejected token falls back.
+  const filter=JSON.stringify({presence:{types:[]},room:{timeline:{limit:1,unread_thread_notifications:true},state:{lazy_load_members:true},ephemeral:{types:[]}}});
+  let full=!this.syncToken;
+  const sync=query=>this.raw('GET','/_matrix/client/v3/sync',undefined,query);
+  let snapshot;
+  try{snapshot=await sync({timeout:'0',filter,...(this.syncToken?{since:this.syncToken}:{})})}
+  catch(e){
+   if(full||(e.status!==400&&e.status!==403))throw e;
+   this.syncToken=undefined;full=true;snapshot=await sync({timeout:'0',filter});
+  }
   const invites=Object.entries(snapshot.rooms?.invite||{}).filter(([,room])=>room.invite_state?.events?.some(e=>e.type==='m.room.member'&&e.state_key===this.account.userId&&e.content?.membership==='invite'&&/^@(slack|discord|whatsapp)(bot|_).*:chord\.local$/.test(e.sender||'')));
   // Join in the background. An initial import may contain hundreds of rooms;
   // waiting for all of them would hide the inbox until the import completed.
   if(invites.length&&!this.inviteWork){
    this.inviteWork=(async()=>{for(let i=0;i<invites.length;i+=3)await Promise.all(invites.slice(i,i+3).map(async([roomId])=>{try{await this.raw('POST',`/_matrix/client/v3/join/${enc(roomId)}`,{})}catch(e){this.error=e.message}}))})().finally(()=>{this.inviteWork=null;this.lastRoomRefresh=0});
   }
-  const dm=new Set(Object.values(snapshot.account_data?.events?.find(e=>e.type==='m.direct')?.content||{}).flat());
+  const directEvent=snapshot.account_data?.events?.find(e=>e.type==='m.direct');
+  if(directEvent||full)this.directRooms=new Set(Object.values(directEvent?.content||{}).flat());
+  const dm=this.directRooms||new Set();
   for(const [roomId,room] of Object.entries(snapshot.rooms?.join||{})){
    const state=[...(room.state?.events||[]),...(room.timeline?.events||[]).filter(e=>e.state_key!==undefined)];const find=t=>state.find(e=>e.type===t)?.content;
    if(find('m.room.create')?.type==='m.space')continue;
-   const bridge=find('m.bridge')||find('uk.half-shot.bridge');let accountID=bridge?.protocol?.id||'matrix';accountID=/slack/i.test(accountID)?'slack':/discord/i.test(accountID)?'discord':/whatsapp/i.test(accountID)?'whatsapp':accountID;
+   const bridge=find('m.bridge')||find('uk.half-shot.bridge');const old=this.chats.get(roomId)||{};const freshRoom=full||!old.id;
+   let accountID=old.accountID,network=old.network;
+   if(bridge||freshRoom){accountID=bridge?.protocol?.id||'matrix';accountID=/slack/i.test(accountID)?'slack':/discord/i.test(accountID)?'discord':/whatsapp/i.test(accountID)?'whatsapp':accountID;network=bridge?.protocol?.displayname||networkFor(accountID)}
    const people=state.filter(e=>e.type==='m.room.member'&&e.content?.membership==='join').map(e=>({id:e.state_key,fullName:e.content.displayname||e.state_key,isSelf:e.state_key===this.account.userId}));
-   const old=this.chats.get(roomId)||{};const prefs=room.account_data?.events?.find(e=>e.type==='org.chord.chat')?.content||{};const marked=room.account_data?.events?.find(e=>e.type==='m.marked_unread')?.content?.unread;
-   const latest=room.timeline?.events?.at(-1);const title=find('m.room.name')?.name||bridge?.channel?.displayname||people.filter(p=>!p.isSelf).map(p=>p.fullName).slice(0,3).join(', ')||roomId;
+   const prefs=room.account_data?.events?.find(e=>e.type==='org.chord.chat')?.content||{};const marked=room.account_data?.events?.find(e=>e.type==='m.marked_unread')?.content?.unread;
+   const latest=room.timeline?.events?.at(-1);const summaryCount=room.summary?.['m.joined_member_count'];
+   let title,description,type,participants;
+   if(freshRoom){
+    title=find('m.room.name')?.name||bridge?.channel?.displayname||people.filter(p=>!p.isSelf).map(p=>p.fullName).slice(0,3).join(', ')||roomId;
+    description=find('m.room.topic')?.topic;type=dm.has(roomId)||summaryCount===2?'single':'group';
+    participants={items:people.length?people:old.participants?.items||[],total:summaryCount||people.length,hasMore:(summaryCount||people.length)>people.length};
+   }else{
+    const name=state.find(e=>e.type==='m.room.name')?.content?.name,topic=state.find(e=>e.type==='m.room.topic');
+    title=name||bridge?.channel?.displayname||old.title||roomId;description=topic?topic.content?.topic:old.description;
+    type=(directEvent||summaryCount!==undefined)?(dm.has(roomId)||summaryCount===2?'single':'group'):(old.type||'group');
+    const merged=new Map((old.participants?.items||[]).map(p=>[p.id,p]));
+    for(const e of state)if(e.type==='m.room.member'){if(e.content?.membership==='join')merged.set(e.state_key,{id:e.state_key,fullName:e.content.displayname||e.state_key,isSelf:e.state_key===this.account.userId});else if(e.content?.membership==='leave'||e.content?.membership==='ban')merged.delete(e.state_key)}
+    const items=[...merged.values()],total=summaryCount!==undefined?summaryCount:(old.participants?.total||items.length);
+    participants={items,total,hasMore:total>items.length};
+   }
    const locallyRead=old.localReadAt&&Number(latest?.origin_server_ts||Date.parse(old.lastActivity)||0)<=old.localReadAt;
-   const rawHighlights=room.unread_notifications?.highlight_count||0;
+   const notes=room.unread_notifications,rawHighlights=(notes||freshRoom)?(notes?.highlight_count||0):(old.rawHighlightCount||0),notificationCount=(notes||freshRoom)?(notes?.notification_count||0):(old.unreadCount||0);
    const readHighlightBaseline=old.localReadAt?Math.min(old.readHighlightBaseline??rawHighlights,rawHighlights):0;
-   this.chats.set(roomId,{...old,id:roomId,accountID,network:bridge?.protocol?.displayname||networkFor(accountID),title,description:find('m.room.topic')?.topic,type:dm.has(roomId)||room.summary?.['m.joined_member_count']===2?'single':'group',participants:{items:people.length?people:old.participants?.items||[],total:room.summary?.['m.joined_member_count']||people.length,hasMore:(room.summary?.['m.joined_member_count']||people.length)>people.length},lastActivity:new Date(Math.max(latest?.origin_server_ts||0,Date.parse(old.lastActivity)||0)).toISOString(),rawHighlightCount:rawHighlights,readHighlightBaseline,highlightCount:locallyRead?0:Math.max(0,rawHighlights-readHighlightBaseline),unreadCount:locallyRead?0:room.unread_notifications?.notification_count||0,isMarkedUnread:old.localMarkedUnread?true:locallyRead?false:marked??old.isMarkedUnread??false,isArchived:prefs.archived??old.isArchived??false,isMuted:old.isMuted||false,isReadOnly:false,capabilities:{reply:2,reaction:2,edit:2,archive:true,markAsUnread:true},preview:latest?.content?.body?{text:latest.content.body}:old.preview});
+   this.chats.set(roomId,{...old,id:roomId,accountID,network:network||networkFor(accountID||'matrix'),title,description,type,participants,lastActivity:new Date(Math.max(latest?.origin_server_ts||0,Date.parse(old.lastActivity)||0)).toISOString(),rawHighlightCount:rawHighlights,readHighlightBaseline,highlightCount:locallyRead?0:Math.max(0,rawHighlights-readHighlightBaseline),unreadCount:locallyRead?0:notificationCount,isMarkedUnread:old.localMarkedUnread?true:locallyRead?false:marked??old.isMarkedUnread??false,isArchived:prefs.archived??old.isArchived??false,isMuted:old.isMuted||false,isReadOnly:false,capabilities:{reply:2,reaction:2,edit:2,archive:true,markAsUnread:true},preview:latest?.content?.body?{text:latest.content.body}:old.preview});
   }
+  if(snapshot.next_batch)this.syncToken=snapshot.next_batch;
   this.scheduleSave();
   this.lastRoomRefresh=Date.now();
  }
@@ -75,7 +103,7 @@ export class MatrixProvider{
    for(let i=0;i<pending.length;i+=100){const batch=pending.slice(i,i+100);this.retain(id,batch.map(x=>x.saved),{historical:true});for(const x of batch)this.coldSaved.set(x.key,x.hash)}
    timelines.push([id,hot]);
   }
-  const snapshot={chats:[...this.chats],timelines,reactions:[...this.reactions].filter(([key])=>hotIDs.has(key)),mediaFiles:[...this.mediaFiles]};
+  const snapshot={chats:[...this.chats],timelines,reactions:[...this.reactions].filter(([key])=>hotIDs.has(key)),mediaFiles:[...this.mediaFiles],...(this.syncToken?{syncToken:this.syncToken}:{})};
   // Snapshot eagerly so queued writes cannot observe a subsequently mutated message.
   const stable=JSON.parse(JSON.stringify(snapshot));
   this.saveWork=(this.saveWork||Promise.resolve()).catch(()=>{}).then(()=>writeHistory(this.dataDir,stable));
