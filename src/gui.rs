@@ -520,39 +520,43 @@ impl Gui {
                 },
             );
         }
-        ui.painter().rect_filled(
-            egui::Rect::from_min_size(rect.min + egui::vec2(0., 18.), egui::vec2(3., 54.)),
-            2.,
-            color,
-        );
+        // Room for the unread dot on the left. Avatars stay put either way.
         let avatar_rect =
-            egui::Rect::from_min_size(rect.min + egui::vec2(9., 23.), Vec2::splat(44.));
+            egui::Rect::from_min_size(rect.min + egui::vec2(24., 23.), Vec2::splat(44.));
+        if chat.unread {
+            ui.painter().circle_filled(
+                egui::pos2(rect.left() + 11., avatar_rect.center().y),
+                7.,
+                p.blue,
+            );
+        }
+        let group =
+            !chat.direct && matches!(chat.source.as_str(), "slack" | "discord" | "whatsapp");
+        let members: Vec<(&str, &str)> = if !chat.avatar_contacts.is_empty() {
+            chat.avatar_contacts
+                .iter()
+                .filter_map(|person| {
+                    Some((
+                        person["id"].as_str()?,
+                        person["name"].as_str().unwrap_or("?"),
+                    ))
+                })
+                .take(3)
+                .collect()
+        } else {
+            chat.contact_ids
+                .iter()
+                .take(3)
+                .map(|id| (id.as_str(), "?"))
+                .collect()
+        };
+        let multi = group && !members.is_empty();
         // The row already owns its layout space. Avatar children must not
         // advance the parent cursor back into that reserved row.
         {
             let mut avatar_ui = ui.new_child(egui::UiBuilder::new().max_rect(avatar_rect));
             let ui = &mut avatar_ui;
-            let group =
-                !chat.direct && matches!(chat.source.as_str(), "slack" | "discord" | "whatsapp");
-            let members: Vec<(&str, &str)> = if !chat.avatar_contacts.is_empty() {
-                chat.avatar_contacts
-                    .iter()
-                    .filter_map(|person| {
-                        Some((
-                            person["id"].as_str()?,
-                            person["name"].as_str().unwrap_or("?"),
-                        ))
-                    })
-                    .take(3)
-                    .collect()
-            } else {
-                chat.contact_ids
-                    .iter()
-                    .take(3)
-                    .map(|id| (id.as_str(), "?"))
-                    .collect()
-            };
-            if !group || members.is_empty() {
+            if !multi {
                 self.avatar(
                     ui,
                     chat.contact_ids
@@ -578,6 +582,23 @@ impl Gui {
                 }
             }
         }
+        // Account color rings the profile image. A group rings each face.
+        let account_ring = egui::Stroke::new(3., color);
+        if !multi {
+            ui.painter()
+                .circle_stroke(avatar_rect.center(), 24., account_ring);
+        } else {
+            for (index, _) in members.iter().enumerate() {
+                let offset = [
+                    egui::vec2(0., 0.),
+                    egui::vec2(20., 0.),
+                    egui::vec2(10., 20.),
+                ][index];
+                let cell = egui::Rect::from_min_size(avatar_rect.min + offset, Vec2::splat(25.));
+                ui.painter()
+                    .circle_stroke(cell.center(), 14.5, account_ring);
+            }
+        }
         let badge = egui::Rect::from_center_size(
             avatar_rect.right_bottom() - egui::vec2(2., 2.),
             Vec2::splat(20.),
@@ -589,7 +610,7 @@ impl Gui {
             .position(|(id, _, _)| *id == chat.source)
             .unwrap_or(0);
         icons::service(ui.painter(), badge.shrink(3.), source, p.text);
-        let text_left = rect.left() + 67.;
+        let text_left = avatar_rect.right() + 16.;
         let right = rect.right() - 9.;
         let mut stamp = time_label(&chat.timestamp);
         let now_ms = chrono::Utc::now().timestamp_millis();
@@ -639,14 +660,10 @@ impl Gui {
             ui,
             &preview,
             egui::pos2(text_left, rect.top() + 50.),
-            right - text_left - 18.,
+            right - text_left - 8.,
             14.,
             p.muted,
         );
-        if chat.unread {
-            ui.painter()
-                .circle_filled(egui::pos2(right - 4., rect.top() + 59.), 4., p.blue);
-        }
         ui.painter().line_segment(
             [
                 egui::pos2(text_left, rect.bottom() - 1.),
@@ -2866,11 +2883,13 @@ mod tests {
         lab.account_key = "slack:TEMMBGZU3".into();
         lab.account_name = Some("Garcia-Bosch Lab".into());
         lab.server_name = None;
+        lab.unread = true;
         let mut course = lab.clone();
         course.id = "course".into();
         course.title = "#announcements".into();
         course.account_key = "slack:TSAU3JLKZ".into();
         course.account_name = Some("15-112 Staff Fall 2026".into());
+        course.unread = false;
         let output = ctx.run(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -2887,28 +2906,62 @@ mod tests {
                 });
             },
         );
-        fn walk(shape: &egui::Shape, fills: &mut Vec<Color32>, labels: &mut Vec<String>) {
+        struct Mark {
+            center: egui::Pos2,
+            radius: f32,
+            fill: Color32,
+            stroke: Color32,
+            stroke_width: f32,
+        }
+        fn walk(shape: &egui::Shape, marks: &mut Vec<Mark>, labels: &mut Vec<String>) {
             match shape {
-                egui::Shape::Rect(rect) => fills.push(rect.fill),
+                egui::Shape::Circle(circle) => marks.push(Mark {
+                    center: circle.center,
+                    radius: circle.radius,
+                    fill: circle.fill,
+                    stroke: circle.stroke.color,
+                    stroke_width: circle.stroke.width,
+                }),
                 egui::Shape::Text(text) => labels.push(text.galley.job.text.clone()),
                 egui::Shape::Vec(shapes) => {
                     for shape in shapes {
-                        walk(shape, fills, labels);
+                        walk(shape, marks, labels);
                     }
                 }
                 _ => {}
             }
         }
-        let mut fills = Vec::new();
+        let mut marks = Vec::new();
         let mut labels = Vec::new();
         for shape in &output.shapes {
-            walk(&shape.shape, &mut fills, &mut labels);
+            walk(&shape.shape, &mut marks, &mut labels);
         }
         let lab_color = theme::account_color("slack:TEMMBGZU3");
         let course_color = theme::account_color("slack:TSAU3JLKZ");
         assert_ne!(lab_color, course_color);
-        assert!(fills.contains(&lab_color), "lab color missing");
-        assert!(fills.contains(&course_color), "course color missing");
+        let ring = |color: Color32| {
+            marks
+                .iter()
+                .any(|mark| mark.stroke == color && mark.stroke_width >= 2.5 && mark.radius >= 14.)
+        };
+        assert!(ring(lab_color), "lab ring missing");
+        assert!(
+            course_color != lab_color && ring(course_color),
+            "course ring missing"
+        );
+        let dots: Vec<_> = marks
+            .iter()
+            .filter(|mark| mark.fill == gui.theme.palette().blue && mark.radius >= 6.)
+            .collect();
+        assert_eq!(dots.len(), 1, "unread dot should be the one large mark");
+        let lab_ring = marks
+            .iter()
+            .find(|mark| mark.stroke == lab_color && mark.stroke_width >= 2.5)
+            .expect("lab ring");
+        assert!(
+            dots[0].center.x < lab_ring.center.x,
+            "unread dot belongs left of the profile"
+        );
         let text = labels.join("\n");
         assert!(text.contains("#general · Garcia-Bosch Lab"), "{text}");
         assert!(

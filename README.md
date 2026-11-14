@@ -4,6 +4,8 @@ Chord is a native Rust chat and email client with an egui interface. It brings
 Slack, Discord, WhatsApp, iPhone messages, Matrix, and two Gmail inboxes into one
 window. Gruvbox dark is the default; dark and light themes are available.
 
+![Chord](docs/screenshot.png)
+
 The window and MCP server are Rust. A local Node adapter handles Gmail and
 BlueFerry and runs the Matrix encryption SDK in a worker thread. Matrix keys and state use
 transactional SQLite storage; first startup imports the legacy files while
