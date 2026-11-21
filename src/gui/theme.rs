@@ -101,8 +101,16 @@ impl Theme {
             widget.corner_radius = 6.into();
         }
         visuals.window_corner_radius = 12.into();
-        ctx.set_visuals(visuals);
-        ctx.style_mut(|s| {
+        // egui keeps separate light and dark styles and switches with the OS appearance; set both
+        // and pin the mode, or a switch brings back egui's default gray text.
+        ctx.set_theme(if self == Self::Light {
+            egui::Theme::Light
+        } else {
+            egui::Theme::Dark
+        });
+        ctx.set_visuals_of(egui::Theme::Light, visuals.clone());
+        ctx.set_visuals_of(egui::Theme::Dark, visuals);
+        ctx.all_styles_mut(|s| {
             s.spacing.item_spacing = egui::vec2(8., 7.);
             s.spacing.button_padding = egui::vec2(10., 5.);
             s.spacing.window_margin = egui::Margin::same(20);
@@ -236,5 +244,27 @@ mod tests {
         assert_eq!(account_color("mail:home"), service_color(5));
         assert_eq!(account_color("mail:cmu"), service_color(6));
         assert_ne!(account_color("mail:home"), account_color("mail:cmu"));
+    }
+}
+#[cfg(test)]
+mod appearance_tests {
+    use super::*;
+    #[test]
+    fn the_chosen_theme_survives_the_os_switching_appearance() {
+        for theme in [Theme::Light, Theme::Dark] {
+            let ctx = egui::Context::default();
+            theme.apply(&ctx);
+            for system in [egui::Theme::Dark, egui::Theme::Light] {
+                let mut text = Color32::TRANSPARENT;
+                let _ = ctx.run(
+                    egui::RawInput {
+                        system_theme: Some(system),
+                        ..Default::default()
+                    },
+                    |ctx| text = ctx.style().visuals.text_color(),
+                );
+                assert_eq!(text, theme.palette().text);
+            }
+        }
     }
 }
