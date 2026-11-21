@@ -12,16 +12,21 @@ use winit::{
     platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS},
     window::{Window, WindowId},
 };
-use wry::{WebView, WebViewBuilder};
+use wry::{NewWindowResponse, WebView, WebViewBuilder};
 
 // Services such as Slack reject WKWebView's default user agent as an unsupported browser.
 const SAFARI: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
+
+enum Event {
+    Values(Map<String, Value>),
+    Open(String),
+}
 
 pub fn run() -> anyhow::Result<()> {
     let mut spec = String::new();
     std::io::stdin().read_to_string(&mut spec)?;
     let spec: Value = serde_json::from_str(&spec).context("Invalid sign-in step")?;
-    let event_loop = EventLoop::<Map<String, Value>>::with_user_event()
+    let event_loop = EventLoop::<Event>::with_user_event()
         .with_activation_policy(ActivationPolicy::Accessory)
         .build()?;
     let mut login = Login {
@@ -46,7 +51,7 @@ pub fn run() -> anyhow::Result<()> {
 struct Login {
     spec: Value,
     fields: Vec<Value>,
-    proxy: EventLoopProxy<Map<String, Value>>,
+    proxy: EventLoopProxy<Event>,
     found: Map<String, Value>,
     window: Option<Window>,
     webview: Option<WebView>,
@@ -112,7 +117,7 @@ impl Login {
     }
 }
 
-impl ApplicationHandler<Map<String, Value>> for Login {
+impl ApplicationHandler<Event> for Login {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -128,14 +133,26 @@ impl ApplicationHandler<Map<String, Value>> for Login {
             }
         };
         let proxy = self.proxy.clone();
+        let opener = self.proxy.clone();
         let mut builder = WebViewBuilder::new()
             .with_url(self.spec["url"].as_str().unwrap_or("about:blank"))
             .with_user_agent(self.spec["user_agent"].as_str().unwrap_or(SAFARI))
             .with_incognito(true)
             .with_ipc_handler(move |request| {
                 if let Ok(Value::Object(values)) = serde_json::from_str(request.body()) {
-                    let _ = proxy.send_event(values);
+                    let _ = proxy.send_event(Event::Values(values));
                 }
+            })
+            // Sites open workspaces and SSO in new windows; keep everything in this one.
+            .with_new_window_req_handler(move |url, _| {
+                let _ = opener.send_event(Event::Open(url));
+                NewWindowResponse::Deny
+            })
+            // Block app deep links such as slack://, so the page falls back to its web client.
+            .with_navigation_handler(|url| {
+                ["https:", "http:", "about:", "data:", "blob:"]
+                    .iter()
+                    .any(|scheme| url.starts_with(scheme))
             });
         if let Some(js) = self.spec["extract_js"]
             .as_str()
@@ -155,7 +172,18 @@ impl ApplicationHandler<Map<String, Value>> for Login {
         window.focus_window();
         self.window = Some(window);
     }
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, values: Map<String, Value>) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: Event) {
+        let values = match event {
+            Event::Values(values) => values,
+            Event::Open(url) => {
+                if (url.starts_with("https:") || url.starts_with("http:"))
+                    && let Some(webview) = &self.webview
+                {
+                    let _ = webview.load_url(&url);
+                }
+                return;
+            }
+        };
         for (id, value) in values {
             if let Some(value) = value.as_str() {
                 self.accept(&id, value);
