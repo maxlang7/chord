@@ -54,7 +54,7 @@ impl Theme {
                 bg: rgb(245, 245, 247),
                 panel: Color32::WHITE,
                 raised: rgb(232, 232, 237),
-                text: rgb(29, 29, 31),
+                text: Color32::BLACK,
                 muted: rgb(110, 110, 115),
                 line: rgb(222, 222, 226),
                 accent: rgb(0, 122, 255),
