@@ -57,6 +57,32 @@ impl Gui {
                 .or_default()
                 .push("emoji".into());
         }
+        // macOS's own UI fonts first; the bundled fonts stay as fallbacks for missing glyphs.
+        #[cfg(target_os = "macos")]
+        for (name, path, family) in [
+            (
+                "sf",
+                "/System/Library/Fonts/SFNS.ttf",
+                egui::FontFamily::Proportional,
+            ),
+            (
+                "sf-mono",
+                "/System/Library/Fonts/SFNSMono.ttf",
+                egui::FontFamily::Monospace,
+            ),
+        ] {
+            if let Ok(bytes) = std::fs::read(path) {
+                fonts.font_data.insert(
+                    name.into(),
+                    std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+                );
+                fonts
+                    .families
+                    .entry(family)
+                    .or_default()
+                    .insert(0, name.into());
+            }
+        }
         ctx.set_fonts(fonts);
         let settings_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("private/ui.json");
         let settings: Value = std::fs::read(&settings_path)
@@ -514,7 +540,7 @@ impl Gui {
                 rect.shrink2(egui::vec2(0., 3.)),
                 8.,
                 if active {
-                    p.raised
+                    p.select
                 } else {
                     theme::tint(p.panel, p.raised, 0.45)
                 },

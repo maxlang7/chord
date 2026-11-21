@@ -17,6 +17,8 @@ pub struct Palette {
     pub accent: Color32,
     pub blue: Color32,
     pub own: Color32,
+    // Background of the selected conversation row.
+    pub select: Color32,
 }
 impl Theme {
     pub fn palette(self) -> Palette {
@@ -32,28 +34,33 @@ impl Theme {
                 accent: rgb(254, 128, 25),
                 blue: rgb(137, 180, 250),
                 own: rgb(72, 52, 36),
+                select: rgb(102, 92, 84),
             },
+            // macOS system grays and accent blue (dark appearance).
             Self::Dark => Palette {
-                bg: rgb(22, 24, 28),
-                panel: rgb(29, 32, 37),
-                raised: rgb(44, 48, 56),
-                text: rgb(233, 236, 242),
-                muted: rgb(151, 160, 176),
-                line: rgb(53, 59, 69),
-                accent: rgb(137, 180, 250),
-                blue: rgb(137, 180, 250),
-                own: rgb(33, 46, 64),
+                bg: rgb(30, 30, 30),
+                panel: rgb(40, 40, 42),
+                raised: rgb(58, 58, 60),
+                text: rgb(245, 245, 247),
+                muted: rgb(152, 152, 157),
+                line: rgb(56, 56, 58),
+                accent: rgb(10, 132, 255),
+                blue: rgb(10, 132, 255),
+                own: rgb(28, 52, 84),
+                select: rgb(38, 64, 102),
             },
+            // macOS system grays and accent blue (light appearance).
             Self::Light => Palette {
-                bg: rgb(245, 246, 248),
+                bg: rgb(245, 245, 247),
                 panel: Color32::WHITE,
-                raised: rgb(232, 235, 241),
-                text: rgb(35, 40, 49),
-                muted: rgb(104, 113, 130),
-                line: rgb(219, 224, 233),
-                accent: rgb(69, 101, 166),
-                blue: rgb(69, 101, 166),
-                own: rgb(232, 239, 250),
+                raised: rgb(232, 232, 237),
+                text: rgb(29, 29, 31),
+                muted: rgb(110, 110, 115),
+                line: rgb(222, 222, 226),
+                accent: rgb(0, 122, 255),
+                blue: rgb(0, 122, 255),
+                own: rgb(229, 239, 255),
+                select: rgb(214, 228, 255),
             },
         }
     }
@@ -67,7 +74,8 @@ impl Theme {
         visuals.override_text_color = Some(p.text);
         visuals.panel_fill = p.bg;
         visuals.window_fill = p.panel;
-        visuals.extreme_bg_color = p.bg;
+        // Text fields read as white (or raised, in dark themes) wells with a hairline border.
+        visuals.extreme_bg_color = p.panel;
         visuals.faint_bg_color = p.panel;
         visuals.selection.bg_fill = p.raised;
         visuals.selection.stroke = egui::Stroke::new(1.0_f32, p.accent);
@@ -76,24 +84,36 @@ impl Theme {
         visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, p.line);
         visuals.widgets.inactive.bg_fill = p.raised;
         visuals.widgets.inactive.weak_bg_fill = p.raised;
-        visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
-        visuals.widgets.hovered.bg_fill = p.raised;
-        visuals.widgets.hovered.weak_bg_fill = p.raised;
-        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, p.accent);
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(0.5_f32, p.line);
+        // Mac controls darken slightly on hover instead of gaining a colored outline.
+        let hover = tint(p.raised, p.line, 0.5);
+        visuals.widgets.hovered.bg_fill = hover;
+        visuals.widgets.hovered.weak_bg_fill = hover;
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(0.5_f32, p.line);
+        visuals.widgets.active.bg_stroke = egui::Stroke::new(0.5_f32, p.line);
+        for widget in [
+            &mut visuals.widgets.noninteractive,
+            &mut visuals.widgets.inactive,
+            &mut visuals.widgets.hovered,
+            &mut visuals.widgets.active,
+            &mut visuals.widgets.open,
+        ] {
+            widget.corner_radius = 6.into();
+        }
         visuals.window_corner_radius = 12.into();
         ctx.set_visuals(visuals);
         ctx.style_mut(|s| {
-            s.spacing.item_spacing = egui::vec2(8., 8.);
-            s.spacing.button_padding = egui::vec2(11., 7.);
+            s.spacing.item_spacing = egui::vec2(8., 7.);
+            s.spacing.button_padding = egui::vec2(10., 5.);
             s.spacing.window_margin = egui::Margin::same(20);
             s.text_styles
-                .insert(TextStyle::Body, FontId::proportional(15.));
+                .insert(TextStyle::Body, FontId::proportional(14.));
             s.text_styles
-                .insert(TextStyle::Button, FontId::proportional(14.));
+                .insert(TextStyle::Button, FontId::proportional(13.));
             s.text_styles
-                .insert(TextStyle::Small, FontId::proportional(12.));
+                .insert(TextStyle::Small, FontId::proportional(11.5));
             s.text_styles
-                .insert(TextStyle::Heading, FontId::proportional(23.));
+                .insert(TextStyle::Heading, FontId::proportional(21.));
         });
     }
     pub fn name(self) -> &'static str {
