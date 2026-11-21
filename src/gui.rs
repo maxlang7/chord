@@ -36,6 +36,7 @@ pub struct Gui {
     search_busy: bool,
     search_seq: u64,
     search_results: Value,
+    logo: Option<egui::TextureHandle>,
 }
 impl Gui {
     pub fn new(mut app: App, ctx: &egui::Context) -> Self {
@@ -115,7 +116,30 @@ impl Gui {
             search_busy: false,
             search_seq: 0,
             search_results: Value::Null,
+            logo: None,
         }
+    }
+    // The Dock icon's rounded square, without the transparent margin of Apple's icon grid.
+    fn logo(&mut self, ctx: &egui::Context) -> egui::TextureHandle {
+        self.logo
+            .get_or_insert_with(|| {
+                let icon = image::load_from_memory(include_bytes!("../assets/macos/icon.png"))
+                    .map(|icon| {
+                        let body = icon.width() * 824 / 1024;
+                        let margin = (icon.width() - body) / 2;
+                        icon.crop_imm(margin, margin, body, body)
+                            .resize_exact(192, 192, image::imageops::FilterType::Lanczos3)
+                            .into_rgba8()
+                    })
+                    .unwrap_or_else(|_| image::RgbaImage::new(1, 1));
+                let size = [icon.width() as usize, icon.height() as usize];
+                ctx.load_texture(
+                    "chord-logo",
+                    egui::ColorImage::from_rgba_unmultiplied(size, icon.as_raw()),
+                    egui::TextureOptions::LINEAR,
+                )
+            })
+            .clone()
     }
     fn key(&mut self, code: crossterm::event::KeyCode) {
         self.app.key(crossterm::event::KeyEvent::new(
@@ -172,7 +196,8 @@ impl Gui {
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("c·").size(30.).color(p.accent).strong());
+                    let logo = self.logo(ui.ctx());
+                    ui.add(egui::Image::new(&logo).fit_to_exact_size(Vec2::splat(30.)));
                     if !compact {
                         ui.label(RichText::new("chord").size(23.).strong());
                     }
@@ -824,7 +849,8 @@ impl Gui {
                 let Some(chat) = self.app.active.clone() else {
                     ui.vertical_centered(|ui| {
                         ui.add_space(ui.available_height() * 0.32);
-                        ui.label(RichText::new("c·").size(58.).color(p.accent));
+                        let logo = self.logo(ui.ctx());
+                        ui.add(egui::Image::new(&logo).fit_to_exact_size(Vec2::splat(64.)));
                         ui.heading("Your conversations");
                         ui.label(
                             RichText::new("Slack, Discord, WhatsApp, iPhone, and email")
