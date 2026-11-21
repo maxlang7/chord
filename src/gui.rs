@@ -2044,6 +2044,23 @@ impl Gui {
                             }
                         }
                     }
+                    #[cfg(target_os = "macos")]
+                    if self.app.login["type"] == "cookies" {
+                        if ui
+                            .add_enabled(
+                                !self.app.login_busy,
+                                egui::Button::new("Sign in with browser"),
+                            )
+                            .clicked()
+                        {
+                            self.app.web_login();
+                        }
+                        ui.label(
+                            RichText::new("Or paste the values yourself:")
+                                .small()
+                                .color(p.muted),
+                        );
+                    }
                     for field in self.app.fields() {
                         let id = field["id"].as_str().unwrap_or("value").to_owned();
                         ui.label(field["name"].as_str().unwrap_or(&id));
