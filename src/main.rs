@@ -5,6 +5,8 @@ mod images;
 mod mcp;
 mod model;
 mod ui;
+#[cfg(target_os = "macos")]
+mod weblogin;
 
 use anyhow::Result;
 use clap::Parser;
@@ -41,6 +43,9 @@ struct Args {
     connect: Option<String>,
     #[arg(long, hide = true, requires = "demo", conflicts_with_all = ["snapshot", "tui", "mcp", "connect"])]
     appearance_smoke_test: Option<gui::AppearanceSmokeTest>,
+    /// Run a bridge's cookies sign-in step (JSON on stdin) in a browser window.
+    #[arg(long, hide = true)]
+    web_login: bool,
 }
 struct Restore;
 impl Drop for Restore {
@@ -56,6 +61,12 @@ impl Drop for Restore {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    if args.web_login {
+        #[cfg(target_os = "macos")]
+        return weblogin::run();
+        #[cfg(not(target_os = "macos"))]
+        anyhow::bail!("Browser sign-in is only available on macOS");
+    }
     let config = args.config.unwrap_or_else(|| {
         std::env::var_os("CHORD_CONFIG")
             .map(PathBuf::from)

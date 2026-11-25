@@ -227,6 +227,8 @@ pub enum Response {
     Accounts(Result<Value, String>),
     Login(String, Result<Value, String>),
     Reaction(u64, Result<Value, String>),
+    #[cfg(target_os = "macos")]
+    WebLogin(String, Result<HashMap<String, String>, String>),
 }
 fn result(r: anyhow::Result<Value>) -> Result<Value, String> {
     r.map_err(|e| format!("{e:#}"))
@@ -1656,6 +1658,41 @@ impl App {
             });
         }
     }
+    #[cfg(target_os = "macos")]
+    pub fn web_login(&mut self) {
+        if self.login_busy {
+            return;
+        }
+        let id = self.login_id.clone();
+        let step = self.login["cookies"].to_string();
+        let tx = self.tx.clone();
+        self.login_busy = true;
+        self.notice = "Finish signing in in the browser window".into();
+        tokio::spawn(async move {
+            let r = async {
+                use tokio::io::AsyncWriteExt;
+                let mut child = tokio::process::Command::new(std::env::current_exe()?)
+                    .arg("--web-login")
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .kill_on_drop(true)
+                    .spawn()?;
+                if let Some(mut stdin) = child.stdin.take() {
+                    stdin.write_all(step.as_bytes()).await?;
+                }
+                let output = child.wait_with_output().await?;
+                if !output.status.success() {
+                    anyhow::bail!("The sign-in window was closed before signing in finished");
+                }
+                Ok(serde_json::from_slice(&output.stdout)?)
+            }
+            .await;
+            let _ = tx.send(Response::WebLogin(
+                id,
+                r.map_err(|e: anyhow::Error| format!("{e:#}")),
+            ));
+        });
+    }
     pub fn fields(&self) -> Vec<Value> {
         self.login["user_input"]["fields"]
             .as_array()
@@ -2193,6 +2230,21 @@ impl App {
                             }
                         }
                         Err(e) => self.login = json!({"type":"error","instructions":e}),
+                    }
+                }
+                #[cfg(target_os = "macos")]
+                Response::WebLogin(id, r) => {
+                    if self.login_id != id {
+                        continue;
+                    }
+                    self.login_busy = false;
+                    match r {
+                        Ok(values) => {
+                            self.login_values.extend(values);
+                            self.notice = "Signed in, connecting…".into();
+                            self.submit_login();
+                        }
+                        Err(e) => self.notice = e,
                     }
                 }
             }
