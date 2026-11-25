@@ -79,6 +79,8 @@ test('reads Messages in order and only sends to a verified direct iMessage chat'
     assert.equal(sms.messages[0].body, 'see you at 6');
     assert.equal(sms.unread, true);
     assert.equal(sms.unread_count, 1);
+    assert.equal(sms.last_unread_ts, '2026-05-09T06:13:22.000Z');
+    assert.equal(direct.last_unread_ts, null);
 
     assert.equal(byKey['mac-2'].name, 'Family');
     assert.equal(byKey['mac-2'].reply_ready, false);

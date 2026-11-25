@@ -7,6 +7,8 @@ export function emailIdentity(value){const match=String(value||'').match(/<?([^\
 export function phoneIdentity(value){let phone=String(value||'').replace(/[\s().-]/g,'');if(phone.startsWith('00'))phone='+'+phone.slice(2);return /^\+[1-9]\d{6,14}$/.test(phone)?'tel:'+phone:null}
 export function mailbox(value){const key=emailIdentity(value);const label=text(String(value||'').replace(/<[^>]+>/,'').replace(/^"|"$/g,''));return {key,name:label&&label.toLowerCase()!==key?.slice(7)?label:null}}
 function identity(value){if(!value)return null;if(value.startsWith('tel:'))return phoneIdentity(value.slice(4));if(value.startsWith('mailto:'))return emailIdentity(value.slice(7));return text(value)}
+// Unread only if the source says so and an unread message arrived after Chord last opened it.
+export function phoneUnread(thread,readAt=0){if(!thread?.unread)return false;const latest=Date.parse(thread.last_unread_ts||thread.last_ts)||0;return latest>readAt}
 export function usableName(name){name=text(name);return !!name&&!/^@[^\s]+:[^\s]+$/.test(name)&&!/^\+?[\d\s().-]{7,}$/.test(name)&&!/^\d{12,}$/.test(name)}
 const idFor=key=>'person_'+createHash('sha256').update(key).digest('hex').slice(0,20);
 
@@ -54,13 +56,17 @@ export class ContactBook{
   const priority=['auto','important','quiet'].includes(saved.priority)?saved.priority:'auto';
   const muteUntil=Number(saved.muteUntil);
   const muted=Number.isFinite(muteUntil)&&muteUntil>now;
-  return {priority,muteUntil:muted?muteUntil:null,muted};
+  return {priority,muteUntil:muted?muteUntil:null,muted,readAt:Number(saved.readAt)||0};
  }
+ // Phone conversations can't be marked read at the source (macOS Messages is read-only to Chord),
+ // so Chord remembers when you opened them.
+ async markRead(id,at=Date.now()){this.data.conversations[id]={...(this.data.conversations[id]||{}),readAt:at};this.dirty=true;await this.save()}
  async setPreference(id,changes={},now=Date.now()){
   if(!Object.hasOwn(changes,'priority')&&!Object.hasOwn(changes,'muteMinutes'))throw new Error('Set a priority or a mute duration');
   const current=this.data.conversations[id]||{};
   const next={priority:['auto','important','quiet'].includes(current.priority)?current.priority:'auto'};
   if(Number(current.muteUntil)>now)next.muteUntil=Number(current.muteUntil);
+  if(Number(current.readAt)>0)next.readAt=Number(current.readAt);
   if(Object.hasOwn(changes,'priority')){
    if(!['auto','important','quiet'].includes(changes.priority))throw new Error('Priority must be auto, important, or quiet');
    next.priority=changes.priority;

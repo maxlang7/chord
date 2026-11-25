@@ -196,7 +196,8 @@ export async function macMessages(method, args, {
             SELECT c.ROWID AS id, c.chat_identifier AS address, c.service_name AS service,
                 c.style, c.display_name AS name, max(m.date) / 1000000 AS latest,
                 max(CASE WHEN m.is_from_me = 1 THEN m.date END) / 1000000 AS sent,
-                sum(CASE WHEN m.is_from_me = 0 AND COALESCE(m.is_read, 1) = 0 AND m.date / 1000000 > ? THEN 1 ELSE 0 END) AS unread
+                sum(CASE WHEN m.is_from_me = 0 AND COALESCE(m.is_read, 1) = 0 AND m.date / 1000000 > ? THEN 1 ELSE 0 END) AS unread,
+                max(CASE WHEN m.is_from_me = 0 AND COALESCE(m.is_read, 1) = 0 THEN m.date END) / 1000000 AS unread_latest
             FROM chat c JOIN chat_message_join cm ON cm.chat_id = c.ROWID
             JOIN message m ON m.ROWID = cm.message_id
             WHERE c.service_name IN ('iMessage', 'SMS', 'RCS') AND ${real}
@@ -230,6 +231,7 @@ export async function macMessages(method, args, {
                 reply_ready: !!recipient(chat),
                 unread: chat.unread > 0,
                 unread_count: chat.unread,
+                last_unread_ts: chat.unread > 0 && chat.unread_latest ? timestamp(chat.unread_latest) : null,
                 messages: messages.all(chat.id).reverse().flatMap(message => {
                     // U+FFFC marks an attachment's place in the text.
                     const body = (message.text || attributedText(message.rich) || '').replace(/￼/g, '').trim();
