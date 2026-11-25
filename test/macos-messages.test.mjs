@@ -4,7 +4,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import test from 'node:test';
-import {accessApp, attributedText, groupName, macMessages, phoneKey} from '../macos-messages.mjs';
+import {accessApp, attributedText, groupName, groupToken, macMessages, phoneKey} from '../macos-messages.mjs';
 
 // A minimal typedstream NSAttributedString, as Messages writes to attributedBody.
 function richBody(text) {
@@ -18,18 +18,19 @@ async function fixture() {
     const database = path.join(directory, 'chat.db');
     const db = new DatabaseSync(database);
     db.exec(`
-        CREATE TABLE chat (chat_identifier TEXT, service_name TEXT, style INTEGER, display_name TEXT);
+        CREATE TABLE chat (guid TEXT, chat_identifier TEXT, service_name TEXT, style INTEGER, display_name TEXT);
         CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
         CREATE TABLE handle (id TEXT);
         CREATE TABLE message (text TEXT, attributedBody BLOB, date INTEGER, is_from_me INTEGER, is_read INTEGER, handle_id INTEGER, associated_message_type INTEGER);
         CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
         INSERT INTO chat VALUES
-            ('dad@example.org', 'iMessage', 45, NULL),
-            ('group', 'iMessage', 43, 'Family'),
-            ('+15550123456', 'SMS', 45, NULL),
-            ('group2', 'iMessage', 43, NULL);
+            ('any;-;dad@example.org', 'dad@example.org', 'iMessage', 45, NULL),
+            ('any;+;chat100', 'chat100', 'iMessage', 43, 'Family'),
+            ('any;-;+15550123456', '+15550123456', 'SMS', 45, NULL),
+            ('any;+;chat101', 'chat101', 'iMessage', 43, NULL),
+            ('any;+;chat200', 'chat200', 'SMS', 43, NULL);
         INSERT INTO handle VALUES ('dad@example.org'), ('+15550123456'), ('+15550000001'), ('+15550000002');
-        INSERT INTO chat_handle_join VALUES (1, 1), (2, 1), (2, 2), (3, 2), (4, 1), (4, 2), (4, 3), (4, 4);
+        INSERT INTO chat_handle_join VALUES (1, 1), (2, 1), (2, 2), (3, 2), (4, 1), (4, 2), (4, 3), (4, 4), (5, 1), (5, 2);
         INSERT INTO chat_message_join VALUES (1, 1), (1, 2), (2, 1), (3, 3), (1, 4), (4, 5);
     `);
     const insert = db.prepare('INSERT INTO message VALUES (?, ?, ?, ?, ?, ?, ?)');
@@ -83,15 +84,28 @@ test('reads Messages in order and only sends to a verified direct iMessage chat'
     assert.equal(direct.last_unread_ts, null);
 
     assert.equal(byKey['mac-2'].name, 'Family');
-    assert.equal(byKey['mac-2'].reply_ready, false);
+    assert.equal(byKey['mac-2'].reply_ready, true);
     assert.equal(byKey['mac-4'].is_group, true);
     assert.equal(byKey['mac-4'].name, 'Ana, Sam & 2 more');
     assert.equal(byKey['mac-4'].messages[0].body, 'x'.repeat(200));
 
     await macMessages('SendToThreadChecked', ['mac-1', 'a "quoted" message', false], options);
     assert.deepEqual(sent, [['dad@example.org', 'a "quoted" message']]);
-    await assert.rejects(macMessages('SendToThreadChecked', ['mac-2', 'group', true], options));
+
+    // Groups need the confirmation flag and a roster that still matches what Chord showed.
+    const groupSent = [];
+    const group = {...options, sendGroup: (...args) => groupSent.push(args)};
+    const token = groupToken(byKey['mac-2'].recipients);
+    assert.equal(token, '\n+15550123456\ndad@example.org');
+    await assert.rejects(macMessages('SendToThreadChecked', ['mac-2', 'group', false, token], group), /not SMS or RCS/);
+    await assert.rejects(macMessages('SendToThreadChecked', ['mac-2', 'group', true, groupToken(['+15550123456'])], group), /group changed/);
+    await macMessages('SendToThreadChecked', ['mac-2', 'hi all', true, token], group);
+    assert.deepEqual(groupSent, [['any;+;chat100', 'hi all']]);
+    await assert.rejects(macMessages('SendToThreadChecked', ['mac-5', 'sms group', true, groupToken(['+15550123456', 'dad@example.org'])], group), /not SMS or RCS/);
     await assert.rejects(macMessages('SendToThreadChecked', ['mac-3', 'SMS', false], options));
+    await assert.rejects(macMessages('SendToThreadChecked', ['mac-2', '   ', true, token], group));
+    assert.equal(groupSent.length, 1);
+    assert.equal(sent.length, 1);
     assert.deepEqual(await macMessages('ListThreads', [10], {enabled: false, database}), []);
 });
 

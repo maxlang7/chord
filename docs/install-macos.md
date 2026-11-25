@@ -84,10 +84,12 @@ app broad access to protected files.
 [Apple's Full Disk Access guide](https://support.apple.com/en-us/149699)
 
 The **iPhone** inbox shows iMessage, SMS, and RCS conversations, including
-groups, with names from your Contacts. On the first reply to a one-to-one
-iMessage conversation, macOS may ask whether Chord's backend can control
-Messages. Replies to groups and SMS, and attachments, are outside this
-preview. Keep using the Messages app for those.
+groups, with names from your Contacts. You can reply to iMessage
+conversations, one-to-one or group. Chord rechecks a group's members before
+sending and refuses if they changed. On the first reply, macOS may ask
+whether Chord's backend can control Messages. Replies to SMS and RCS
+conversations, and attachments, are outside this preview. Keep using the
+Messages app for those.
 
 Turning off Messages stops live access and hides its inbox rows. Previously
 archived conversations remain available in archive search.

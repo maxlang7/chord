@@ -21,6 +21,23 @@ on run argv
 end run
 `;
 
+// Groups are addressed by the chat's guid from chat.db, which Messages accepts as its chat id.
+export const messagesGroupSendScript = `
+on run argv
+    set chatID to item 1 of argv
+    set messageText to item 2 of argv
+    tell application "Messages"
+        send messageText to chat id chatID
+    end tell
+end run
+`;
+
+// The roster fingerprint a group send must match, built like presentThreads in server.mjs,
+// so a message never goes to a group whose members changed after Chord showed it.
+export function groupToken(handles) {
+    return ['', ...[...new Set(handles.map(String).filter(Boolean))].sort()].join('\n');
+}
+
 // The app macOS asks about for Full Disk Access: the terminal that started the backend,
 // or Chord itself when its launcher did.
 export function accessApp(env = process.env) {
@@ -130,6 +147,7 @@ export async function macMessages(method, args, {
     app = accessApp(),
     now = Date.now(),
     send = (address, text) => run('/usr/bin/osascript', ['-e', messagesSendScript, address, text], {timeout: 30_000}),
+    sendGroup = (chatID, text) => run('/usr/bin/osascript', ['-e', messagesGroupSendScript, chatID, text], {timeout: 30_000}),
 } = {}) {
     if (!enabled) {
         if (method === 'GetStatus') return {map: false, enabled: false, connectivity_detail: 'Turn on iMessages to read the Messages app on this Mac.'};
@@ -169,17 +187,32 @@ export async function macMessages(method, args, {
                 handles.length === 1 && chat.address === address &&
                 /^[+0-9][0-9]{2,}$|^[A-Za-z0-9_.+%-]+@[A-Za-z0-9.-]+$/.test(address)) return address;
         }
+        // iMessage groups only; SMS and RCS groups go through the iPhone and stay read-only.
+        function groupChat(chat) {
+            if (chat.style === 43 && chat.service === 'iMessage' && /^(any|iMessage);\+;/.test(chat.guid || '')) return chat.guid;
+        }
         if (method === 'SendToThreadChecked') {
-            const [key, text, confirmedGroup] = args;
+            const [key, text, confirmedGroup, expectedToken] = args;
             const chat = db.prepare(`
-                SELECT ROWID AS id, chat_identifier AS address, service_name AS service, style
+                SELECT ROWID AS id, guid, chat_identifier AS address, service_name AS service, style
                 FROM chat WHERE ROWID = ?
             `).get(Number(String(key).match(/^mac-(\d+)$/)?.[1] || 0));
-            const address = chat && recipient(chat);
-            if (!address || confirmedGroup || typeof text !== 'string' || !text.trim() || text.includes('\0')) {
-                throw new Error('Chord can send only to an existing one-to-one iMessage conversation.');
+            if (!chat || typeof text !== 'string' || !text.trim() || text.includes('\0')) {
+                throw new Error('Chord can send only to an existing iMessage conversation.');
             }
-            await send(address, text);
+            const address = recipient(chat);
+            if (address && !confirmedGroup) {
+                await send(address, text);
+                return {submitted: true};
+            }
+            const chatID = groupChat(chat);
+            if (!chatID || !confirmedGroup) {
+                throw new Error('Chord can send only to existing iMessage conversations, not SMS or RCS.');
+            }
+            if (expectedToken !== groupToken(participants.all(chat.id).map(handle => handle.id))) {
+                throw new Error('This group changed since Chord showed it. Refresh and check who is in it before sending.');
+            }
+            await sendGroup(chatID, text);
             return {submitted: true};
         }
         // The Messages database stays read-only. Opening a thread in Chord
@@ -193,7 +226,7 @@ export async function macMessages(method, args, {
         // Tapbacks and other reactions are separate rows; show only real messages.
         const real = 'COALESCE(m.associated_message_type, 0) = 0';
         const chats = db.prepare(`
-            SELECT c.ROWID AS id, c.chat_identifier AS address, c.service_name AS service,
+            SELECT c.ROWID AS id, c.guid, c.chat_identifier AS address, c.service_name AS service,
                 c.style, c.display_name AS name, max(m.date) / 1000000 AS latest,
                 max(CASE WHEN m.is_from_me = 1 THEN m.date END) / 1000000 AS sent,
                 sum(CASE WHEN m.is_from_me = 0 AND COALESCE(m.is_read, 1) = 0 AND m.date / 1000000 > ? THEN 1 ELSE 0 END) AS unread,
@@ -228,7 +261,7 @@ export async function macMessages(method, args, {
                 recipients: handles,
                 participant_names: handles.map((handle, i) => people[i]?.name || handle),
                 is_group: isGroup,
-                reply_ready: !!recipient(chat),
+                reply_ready: !!(recipient(chat) || groupChat(chat)),
                 unread: chat.unread > 0,
                 unread_count: chat.unread,
                 last_unread_ts: chat.unread > 0 && chat.unread_latest ? timestamp(chat.unread_latest) : null,
